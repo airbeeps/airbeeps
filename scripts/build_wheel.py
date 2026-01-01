@@ -203,9 +203,8 @@ def main():
             print("\nWARNING: Building wheel without frontend assets")
 
         # Step 4: Build wheel
-        # We only pass the version to build_wheel if it was explicitly overridden
-        # otherwise let hatch-vcs do its thing with git tags
-        build_wheel(args.version)
+        # force the version to be whatever we detected at the start
+        build_wheel(version)
 
         # Step 5: Cleanup (important!)
         cleanup_after_build()
