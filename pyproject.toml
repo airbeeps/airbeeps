@@ -1,0 +1,274 @@
+# Root-level pyproject.toml for workspace-wide Python tooling
+# This does NOT define a Python package - see backend/pyproject.toml for that
+
+[project]
+name = "aiassistant-workspace"
+version = "0.1.0"
+requires-python = ">=3.13"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+src = ["backend"]
+
+# Exclude common non-source directories
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+    "node_modules",
+    "dist",
+    "build",
+    ".nuxt",
+    ".output",
+    "backend/dist",
+    "*.egg-info",
+    "alembic/versions",  # Auto-generated migration files
+]
+
+[tool.ruff.lint]
+# Enable comprehensive rule sets
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "ERA",    # eradicate (commented-out code)
+    "PL",     # Pylint
+    "RUF",    # Ruff-specific rules
+    "PERF",   # Perflint
+    "FURB",   # refurb
+    "LOG",    # flake8-logging
+    "G",      # flake8-logging-format
+    "TID",    # flake8-tidy-imports
+    "PIE",    # flake8-pie
+    "RET",    # flake8-return
+    "RSE",    # flake8-raise
+    "FLY",    # flynt
+    "ICN",    # flake8-import-conventions
+    "Q",      # flake8-quotes
+    "T20",    # flake8-print
+    "DTZ",    # flake8-datetimez
+    "ASYNC",  # flake8-async
+    "S",      # flake8-bandit (security)
+]
+
+ignore = [
+    "E501",     # Line too long - handled by formatter
+    "PLR0913",  # Too many arguments - common in APIs
+    "PLR2004",  # Magic value comparison - too noisy
+    "PLR0912",  # Too many branches
+    "PLR0915",  # Too many statements
+    "S101",     # Use of assert - fine in tests
+    "S104",     # Binding to all interfaces - intentional in dev
+    "S105",     # Hardcoded password - false positives on variable names
+    "S106",     # Hardcoded password in argument default
+    "B008",     # Function calls in argument defaults - FastAPI pattern
+    "RET504",   # Unnecessary variable before return - sometimes clearer
+    "SIM108",   # Ternary instead of if-else - not always clearer
+    "ARG001",   # Unused function argument - common in FastAPI deps
+    "ARG002",   # Unused method argument
+]
+
+# Allow autofix for all enabled rules
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+# Tests can use assert, magic values, etc.
+"**/tests/**/*.py" = ["S101", "PLR2004", "ARG001", "ARG002"]
+"**/test_*.py" = ["S101", "PLR2004", "ARG001", "ARG002"]
+"conftest.py" = ["S101", "ARG001", "ARG002"]
+
+# Scripts are allowed to use print
+"**/scripts/**/*.py" = ["T20"]
+
+# Alembic migrations have specific patterns
+"**/alembic/versions/*.py" = ["E501", "ERA001"]
+
+# CLI can use print
+"**/cli.py" = ["T20"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["airbeeps"]
+force-single-line = false
+combine-as-imports = true
+split-on-trailing-comma = true
+
+[tool.ruff.lint.flake8-type-checking]
+strict = true
+runtime-evaluated-base-classes = [
+    "pydantic.BaseModel",
+    "sqlalchemy.orm.DeclarativeBase",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.Cookie",
+    "fastapi.Form",
+    "fastapi.File",
+]
+
+[tool.ruff.lint.pylint]
+max-args = 10
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+docstring-code-line-length = 80
+
+# ============================================================================
+# mypy configuration
+# ============================================================================
+[tool.mypy]
+python_version = "3.13"
+# When running from backend/, mypy will check the current directory
+files = ["."]
+
+# Import discovery
+namespace_packages = true
+explicit_package_bases = true
+
+# Disallow dynamic typing
+disallow_any_unimported = false
+disallow_any_expr = false
+disallow_any_decorated = false
+disallow_any_explicit = false
+disallow_any_generics = true
+disallow_subclassing_any = true
+
+# Untyped definitions and calls
+disallow_untyped_calls = false
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+disallow_untyped_decorators = false
+
+# None and Optional handling
+no_implicit_optional = true
+strict_optional = true
+
+# Configuring warnings
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_return_any = false
+warn_unreachable = true
+
+# Strictness flags
+strict_equality = true
+extra_checks = true
+
+# Configuring error messages
+show_error_context = true
+show_column_numbers = true
+show_error_codes = true
+pretty = true
+color_output = true
+error_summary = true
+
+# Miscellaneous
+warn_unused_configs = true
+follow_imports = "normal"
+ignore_missing_imports = false
+
+# Plugins
+plugins = [
+    "pydantic.mypy",
+    "sqlalchemy.ext.mypy.plugin",
+]
+
+# Per-module options
+[[tool.mypy.overrides]]
+module = [
+    "aiomysql.*",
+    "aiosqlite.*",
+    "fastapi_mail.*",
+    "fastapi_pagination.*",
+    "sqladmin.*",
+    "magic_filter.*",
+    "aioboto3.*",
+    "markitdown.*",
+    "chromadb.*",
+    "dashscope.*",
+    "sentence_transformers.*",
+    "litellm.*",
+    "mcp.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+check_untyped_defs = false
+
+# ============================================================================
+# pytest configuration (for running from root)
+# ============================================================================
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_functions = ["test_*"]
+python_classes = ["Test*"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+# IMPORTANT: Keep in sync with backend/pytest.ini
+# --disable-socket: Block all network access (prevents accidental external API calls)
+# --allow-unix-socket: Allow Unix domain sockets (needed for SQLite, etc.)
+# --allow-hosts: Whitelist localhost for test server
+addopts = [
+    "-v",
+    "--tb=short",
+    "-ra",
+    "--disable-socket",
+    "--allow-unix-socket",
+    "--allow-hosts=127.0.0.1,localhost,::1",
+]
+
+# ============================================================================
+# coverage configuration
+# ============================================================================
+[tool.coverage.run]
+source = ["backend/airbeeps"]
+branch = true
+omit = [
+    "**/tests/*",
+    "**/__pycache__/*",
+    "**/alembic/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+show_missing = true

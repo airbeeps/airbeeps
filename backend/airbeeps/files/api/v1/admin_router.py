@@ -1,0 +1,241 @@
+"""
+FastAPI router for file upload and management endpoints.
+"""
+
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from airbeeps.auth.fastapi_users import current_user
+from airbeeps.database import get_async_session
+from airbeeps.files.models import FileType
+from airbeeps.files.service import FileService, get_file_service
+from airbeeps.rag.models import Document
+from airbeeps.rag.service import RAGService
+from airbeeps.users.models import User
+
+router = APIRouter()
+
+
+class FileResponse(BaseModel):
+    """Response model for file information."""
+
+    id: UUID
+    filename: str
+    content_type: str
+    file_size: int
+    file_type: FileType
+    file_path: str
+    uploaded_by: UUID
+    created_at: str
+    metadata: dict
+
+    class Config:
+        from_attributes = True
+
+
+class FileListResponse(BaseModel):
+    """Response model for file list."""
+
+    files: list[FileResponse]
+    total: int
+
+
+@router.get("/files/{file_id}", response_model=FileResponse)
+async def get_file_info(
+    file_id: UUID,
+    current_user: User = Depends(current_user),
+    file_service: FileService = Depends(get_file_service()),
+):
+    """
+    Get file information by ID.
+
+    - **file_id**: Unique file identifier
+    - **Returns**: File metadata and information
+    """
+    file_record = await file_service.get_file_by_id(file_id)
+    if not file_record:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(
+        id=file_record.id,
+        filename=file_record.filename,
+        content_type=file_record.content_type,
+        file_size=file_record.file_size,
+        file_type=file_record.file_type,
+        uploaded_by=file_record.uploaded_by,
+        created_at=file_record.created_at.isoformat(),
+        metadata=file_record.file_metadata,
+    )
+
+
+@router.get("/files/{file_id}/download")
+async def download_file(
+    file_id: UUID,
+    current_user: User = Depends(current_user),
+    file_service: FileService = Depends(get_file_service()),
+):
+    """
+    Download file content.
+
+    - **file_id**: Unique file identifier
+    - **Returns**: File content as streaming response
+    """
+    try:
+        file_data, content_type, filename = await file_service.download_file(file_id)
+
+        return StreamingResponse(
+            file_data,
+            media_type=content_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Download failed")
+
+
+@router.get("/files/{file_id}/url")
+async def get_download_url(
+    file_id: UUID,
+    expiration: int = 3600,
+    current_user: User = Depends(current_user),
+    file_service: FileService = Depends(get_file_service()),
+):
+    """
+    Get presigned download URL for file.
+
+    - **file_id**: Unique file identifier
+    - **expiration**: URL expiration time in seconds (default: 1 hour)
+    - **Returns**: Presigned URL for direct file access
+    """
+    url = await file_service.generate_download_url(file_id, expiration)
+    if not url:
+        raise HTTPException(
+            status_code=404, detail="File not found or URL generation failed"
+        )
+
+    return {"download_url": url, "expiration": expiration}
+
+
+@router.get("/files", response_model=FileListResponse)
+async def list_user_files(
+    file_type: FileType | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    current_user: User = Depends(current_user),
+    file_service: FileService = Depends(get_file_service()),
+):
+    """
+    List files uploaded by the current user.
+
+    - **file_type**: Optional filter by file type
+    - **limit**: Maximum number of files to return (default: 50, max: 100)
+    - **offset**: Pagination offset (default: 0)
+    - **Returns**: List of user's files
+    """
+    # Limit the maximum number of files that can be requested
+    limit = min(limit, 100)
+
+    files = await file_service.get_user_files(
+        user_id=current_user.id, file_type=file_type, limit=limit, offset=offset
+    )
+
+    file_responses = [
+        FileResponse(
+            id=file_record.id,
+            filename=file_record.filename,
+            content_type=file_record.content_type,
+            file_size=file_record.file_size,
+            file_type=file_record.file_type,
+            file_path=file_record.file_path,
+            uploaded_by=file_record.uploaded_by,
+            created_at=file_record.created_at.isoformat(),
+            metadata=file_record.file_metadata,
+        )
+        for file_record in files
+    ]
+
+    return FileListResponse(files=file_responses, total=len(file_responses))
+
+
+@router.delete("/files/{file_id}")
+async def delete_file(
+    file_id: UUID,
+    current_user: User = Depends(current_user),
+    file_service: FileService = Depends(get_file_service()),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """
+    Delete a file.
+
+    - **file_id**: Unique file identifier
+    - **Returns**: Success confirmation
+    """
+    file_record = await file_service.get_file_by_id(file_id)
+    if not file_record:
+        raise HTTPException(status_code=404, detail="File not found")
+    if file_record.uploaded_by != current_user.id:
+        raise HTTPException(
+            status_code=403, detail="Not authorized to delete this file"
+        )
+
+    file_path = file_record.file_path
+
+    # Delete documents that reference this file, including vectors
+    if file_path:
+        rag_service = RAGService(session, file_service)
+        doc_result = await session.execute(
+            select(Document).where(
+                and_(
+                    Document.file_path == file_path,
+                    Document.status == "ACTIVE",
+                )
+            )
+        )
+        docs = doc_result.scalars().all()
+        for doc in docs:
+            await rag_service.delete_document(doc.id, owner_id=current_user.id)
+
+    success = await file_service.delete_file(file_id, current_user.id)
+    if not success:
+        raise HTTPException(status_code=500, detail="File deletion failed")
+
+    return {"message": "File and related documents deleted successfully"}
+
+
+@router.put("/files/{file_id}/metadata", response_model=FileResponse)
+async def update_file_metadata(
+    file_id: UUID,
+    metadata: dict,
+    current_user: User = Depends(current_user),
+    file_service: FileService = Depends(get_file_service()),
+):
+    """
+    Update file metadata.
+
+    - **file_id**: Unique file identifier
+    - **metadata**: New metadata to set
+    - **Returns**: Updated file information
+    """
+    file_record = await file_service.update_file_metadata(
+        file_id=file_id, user_id=current_user.id, metadata=metadata
+    )
+
+    if not file_record:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    return FileResponse(
+        id=file_record.id,
+        filename=file_record.filename,
+        content_type=file_record.content_type,
+        file_size=file_record.file_size,
+        file_type=file_record.file_type,
+        uploaded_by=file_record.uploaded_by,
+        created_at=file_record.created_at.isoformat(),
+        metadata=file_record.file_metadata,
+    )

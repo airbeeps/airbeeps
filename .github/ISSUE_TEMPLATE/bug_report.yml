@@ -1,0 +1,155 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the form below to help us fix it.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: Describe the bug...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. Scroll down to '...'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen
+      placeholder: Describe what should happen...
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened
+      placeholder: Describe what actually happened...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and Error Messages
+      description: If applicable, paste any relevant log output or error messages
+      render: shell
+      placeholder: |
+        Paste logs here...
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which component is affected?
+      options:
+        - Backend API
+        - Frontend UI
+        - Database/Migrations
+        - RAG/Vector Store
+        - Agent/Tools
+        - Authentication
+        - File Upload/Storage
+        - Configuration
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Airbeeps Version
+      description: What version of Airbeeps are you running?
+      placeholder: "e.g. 0.1.0 or commit hash"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python Version
+      description: What version of Python?
+      placeholder: "e.g. 3.13.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      description: What OS are you using?
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS Version
+      description: What version of the OS?
+      placeholder: "e.g. Ubuntu 22.04, macOS 14.2, Windows 11"
+
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database
+      description: Which database are you using?
+      options:
+        - SQLite
+        - PostgreSQL
+        - MySQL
+        - Other
+
+  - type: textarea
+    id: env-config
+    attributes:
+      label: Environment Configuration
+      description: Share relevant environment variable settings (redact secrets!)
+      render: bash
+      placeholder: |
+        AIRBEEPS_ENVIRONMENT=development
+        AIRBEEPS_DATABASE_URL=sqlite+aiosqlite:///...
+        # etc.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context about the problem
+      placeholder: Any other details...
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission Checks
+      options:
+        - label: I have searched existing issues to ensure this is not a duplicate
+          required: true
+        - label: I have provided all requested information above
+          required: true
+        - label: I have redacted any sensitive information (passwords, keys, tokens)
+          required: true

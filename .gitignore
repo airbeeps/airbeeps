@@ -1,0 +1,178 @@
+# ==============================================================================
+# OS / Editors
+# ==============================================================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+.fleet/
+*.swp
+*.swo
+*~
+.*.sw?
+
+# ==============================================================================
+# Python
+# ==============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.eggs/
+.venv/
+venv/
+ENV/
+env/
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Python tools
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ty_cache/
+.pytype/
+.pyre/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+htmlcov/
+.hypothesis/
+.nox/
+.tox/
+
+# Type stubs
+typings/
+
+# Build
+build/
+develop-eggs/
+sdist/
+var/
+wheels/
+share/python-wheels/
+MANIFEST
+
+# ==============================================================================
+# Node / Frontend
+# ==============================================================================
+node_modules/
+.pnpm-store/
+.pnp.*
+.yarn/
+.npmrc
+pnpm-debug.log*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.eslintcache
+.stylelintcache
+.prettiercache
+
+# Nuxt
+.nuxt/
+.output/
+.nitro/
+.turbo/
+.vercel/
+.netlify/
+.data/
+
+# Build output
+dist/
+build/
+
+# ==============================================================================
+# Environment & Secrets
+# ==============================================================================
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.local
+.envrc
+
+# ==============================================================================
+# Runtime Data & Databases
+# ==============================================================================
+backend/storage/chroma_db/
+data/**
+!data/.gitkeep
+backend/data/**
+test_data/**
+!test_data/.gitkeep
+
+# SQLite
+*.db
+*.sqlite
+*.sqlite3
+testing.db*
+!*.db.example
+
+# ==============================================================================
+# Logs & Debug
+# ==============================================================================
+*.log
+logs/
+*.log.*
+.debug/
+
+# ==============================================================================
+# Build Artifacts
+# ==============================================================================
+backend/airbeeps/static/
+backend/dist/
+*.whl
+*.tar.gz
+*.zip
+
+# ==============================================================================
+# Coverage & Test Reports
+# ==============================================================================
+coverage/
+.nyc_output/
+test-results/
+junit.xml
+test-report.xml
+
+# ==============================================================================
+# Playwright / E2E Testing
+# ==============================================================================
+playwright-report/
+playwright/.cache/
+frontend/.e2e-data/
+frontend/test-results/
+frontend/playwright-report/
+
+# ==============================================================================
+# IDE & Tools Cache
+# ==============================================================================
+.cache/
+*.cache
+.parcel-cache/
+.temp/
+.tmp/
+
+# ==============================================================================
+# Pre-commit
+# ==============================================================================
+# pre-commit environments are in user home, not project
+
+# ==============================================================================
+# Local Development Files
+# ==============================================================================
+*.local.*
+local/
+scratch/
+tmp/
+temp/
+
+# Auto-generated version file (hatch-vcs)
+backend/airbeeps/_version.py

@@ -1,0 +1,124 @@
+version: 1
+
+# Built-in catalog of common providers and recommended models.
+# This is used for UI dropdown suggestions and safe defaults.
+# The actual configured providers/models always live in the database.
+
+providers:
+  - id: openai
+    display_name: OpenAI
+    description: Official OpenAI API (OpenAI-compatible).
+    website: https://openai.com
+    api_base_url: https://api.openai.com/v1
+    interface_type: OPENAI
+    litellm_provider: null
+    models:
+      - name: gpt-4o-mini
+        display_name: GPT-4o mini
+        description: Fast, cost-effective multimodal chat model.
+        capabilities: [chat, vision, tool_use]
+        max_context_tokens: 128000
+        max_output_tokens: 16384
+      - name: gpt-4o
+        display_name: GPT-4o
+        description: High-quality multimodal chat model.
+        capabilities: [chat, vision, tool_use]
+        max_context_tokens: 128000
+        max_output_tokens: 16384
+      - name: text-embedding-3-small
+        display_name: Text Embedding 3 Small
+        description: Embedding model for semantic search/RAG.
+        capabilities: [embedding]
+        max_context_tokens: 8191
+      - name: text-embedding-3-large
+        display_name: Text Embedding 3 Large
+        description: Higher quality embeddings.
+        capabilities: [embedding]
+        max_context_tokens: 8191
+
+  - id: anthropic
+    display_name: Anthropic
+    description: Anthropic Claude models.
+    website: https://www.anthropic.com
+    api_base_url: https://api.anthropic.com
+    interface_type: ANTHROPIC
+    litellm_provider: null
+    models:
+      - name: claude-3-5-sonnet-latest
+        display_name: Claude 3.5 Sonnet (latest)
+        description: Strong general-purpose chat model.
+        capabilities: [chat, tool_use]
+      - name: claude-3-5-haiku-latest
+        display_name: Claude 3.5 Haiku (latest)
+        description: Fast/efficient chat model.
+        capabilities: [chat, tool_use]
+
+  - id: google
+    display_name: Google (Gemini)
+    description: Google Gemini models via the Generative Language API.
+    website: https://ai.google.dev
+    api_base_url: https://generativelanguage.googleapis.com
+    interface_type: GOOGLE
+    litellm_provider: null
+    models:
+      - name: gemini-1.5-pro
+        display_name: Gemini 1.5 Pro
+        description: High-quality multimodal chat model.
+        capabilities: [chat, vision, tool_use]
+      - name: gemini-1.5-flash
+        display_name: Gemini 1.5 Flash
+        description: Fast/efficient multimodal chat model.
+        capabilities: [chat, vision, tool_use]
+
+  - id: xai
+    display_name: xAI
+    description: xAI Grok models (OpenAI-compatible style).
+    website: https://x.ai
+    api_base_url: https://api.x.ai/v1
+    interface_type: XAI
+    litellm_provider: null
+    models:
+      - name: grok-beta
+        display_name: Grok Beta
+        description: General-purpose chat model.
+        capabilities: [chat, tool_use]
+
+  - id: groq
+    display_name: Groq
+    description: Groq (OpenAI-compatible) for ultra-low latency inference.
+    website: https://groq.com
+    api_base_url: https://api.groq.com/openai/v1
+    interface_type: OPENAI
+    litellm_provider: groq
+    models:
+      - name: llama3-70b-8192
+        display_name: Llama 3 70B (8k)
+        description: Strong open model via Groq.
+        capabilities: [chat, tool_use]
+        max_context_tokens: 8192
+      - name: llama3-8b-8192
+        display_name: Llama 3 8B (8k)
+        description: Smaller/faster open model via Groq.
+        capabilities: [chat, tool_use]
+        max_context_tokens: 8192
+
+  - id: huggingface_local
+    display_name: Hugging Face (Local Embeddings)
+    description: Run embeddings locally using sentence-transformers.
+    website: https://huggingface.co/models
+    api_base_url: local
+    interface_type: HUGGINGFACE
+    litellm_provider: null
+    models:
+      - name: sentence-transformers/all-MiniLM-L6-v2
+        display_name: all-MiniLM-L6-v2
+        description: Small, fast general-purpose embedding model.
+        capabilities: [embedding]
+      - name: BAAI/bge-small-en-v1.5
+        display_name: BGE Small EN v1.5
+        description: Strong English embeddings; good default for RAG.
+        capabilities: [embedding]
+      - name: intfloat/e5-small-v2
+        display_name: E5 Small v2
+        description: Efficient embeddings.
+        capabilities: [embedding]

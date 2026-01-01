@@ -1,0 +1,103 @@
+# EditorConfig helps maintain consistent coding styles across different editors
+# https://editorconfig.org
+
+root = true
+
+# Default settings for all files
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Python files
+[*.py]
+indent_size = 4
+max_line_length = 88
+
+# Python type stubs
+[*.pyi]
+indent_size = 4
+
+# Markdown files - trailing whitespace can be significant
+[*.md]
+trim_trailing_whitespace = false
+indent_size = 2
+
+# YAML/YML files
+[*.{yml,yaml}]
+indent_size = 2
+
+# JSON files
+[*.json]
+indent_size = 2
+
+# JavaScript/TypeScript
+[*.{js,jsx,ts,tsx,mjs,cjs}]
+indent_size = 2
+
+# Vue files
+[*.vue]
+indent_size = 2
+
+# CSS/SCSS/Less
+[*.{css,scss,less,sass}]
+indent_size = 2
+
+# HTML files
+[*.html]
+indent_size = 2
+
+# Shell scripts
+[*.{sh,bash,zsh}]
+indent_size = 2
+
+# Batch files (Windows)
+[*.{bat,cmd}]
+end_of_line = crlf
+
+# PowerShell
+[*.{ps1,psm1,psd1}]
+indent_size = 4
+end_of_line = crlf
+
+# Makefile needs tabs
+[Makefile]
+indent_style = tab
+indent_size = 4
+
+[*.mk]
+indent_style = tab
+indent_size = 4
+
+# Git config files
+[.git*]
+indent_style = tab
+
+# Docker files
+[Dockerfile*]
+indent_size = 4
+
+[docker-compose*.{yml,yaml}]
+indent_size = 2
+
+# INI files
+[*.ini]
+indent_size = 4
+
+# TOML files
+[*.toml]
+indent_size = 4
+
+# SQL files
+[*.sql]
+indent_size = 4
+
+# Lock files - don't modify
+[{pnpm-lock.yaml,package-lock.json,yarn.lock,uv.lock}]
+indent_size = unset
+indent_style = unset
+insert_final_newline = unset
+trim_trailing_whitespace = unset

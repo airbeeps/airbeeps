@@ -1,0 +1,8 @@
+# Gitleaks ignore file
+# Add commit hashes, files, or patterns to ignore false positives
+# Format: commit:file:line or file:line or regex pattern
+
+# Example entries (uncomment as needed):
+# abc123def:path/to/file:10
+# path/to/file:15
+# test_*.py

@@ -1,0 +1,134 @@
+# Git attributes configuration
+# https://git-scm.com/docs/gitattributes
+
+# =============================================================================
+# Auto detect text files and perform LF normalization
+# =============================================================================
+* text=auto eol=lf
+
+# =============================================================================
+# Source code files - explicitly set as text
+# =============================================================================
+
+# Python
+*.py text diff=python
+*.pyi text diff=python
+*.pyx text diff=python
+
+# JavaScript/TypeScript
+*.js text
+*.jsx text
+*.ts text
+*.tsx text
+*.mjs text
+*.cjs text
+*.vue text
+
+# Web
+*.html text diff=html
+*.htm text diff=html
+*.css text diff=css
+*.scss text diff=css
+*.sass text diff=css
+*.less text diff=css
+
+# Data formats
+*.json text
+*.yaml text
+*.yml text
+*.toml text
+*.xml text diff=xml
+*.csv text
+
+# Documentation
+*.md text diff=markdown
+*.txt text
+*.rst text
+
+# Configuration files
+*.ini text
+*.cfg text
+*.conf text
+.editorconfig text
+.gitattributes text
+.gitignore text
+.gitmodules text
+.env* text
+
+# Shell scripts
+*.sh text eol=lf
+*.bash text eol=lf
+*.zsh text eol=lf
+
+# Windows scripts - keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# =============================================================================
+# Binary files - don't normalize
+# =============================================================================
+
+# Images
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.svg text
+*.avif binary
+
+# Fonts
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+
+# Archives
+*.zip binary
+*.tar binary
+*.gz binary
+*.bz2 binary
+*.7z binary
+*.rar binary
+
+# Database
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+
+# Python wheels
+*.whl binary
+*.egg binary
+
+# =============================================================================
+# Lock files - don't normalize (managed by package managers)
+# =============================================================================
+pnpm-lock.yaml -diff linguist-generated=true
+package-lock.json -diff linguist-generated=true
+yarn.lock -diff linguist-generated=true
+uv.lock -diff linguist-generated=true
+
+# =============================================================================
+# Generated files - don't diff
+# =============================================================================
+*.min.js -diff
+*.min.css -diff
+*.map -diff
+
+# =============================================================================
+# Documentation - render as markdown in diffs
+# =============================================================================
+LICENSE text
+CHANGELOG.md diff=markdown
+README.md diff=markdown
+
+# =============================================================================
+# GitHub Linguist overrides
+# =============================================================================
+# Hide generated files from language stats
+backend/airbeeps/alembic/versions/*.py linguist-generated=true
+frontend/.nuxt/** linguist-generated=true
+frontend/.output/** linguist-generated=true

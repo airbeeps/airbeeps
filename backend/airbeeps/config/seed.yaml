@@ -1,0 +1,285 @@
+system_configs:
+  - key: registration_enabled
+    value: true
+    description: "Whether user registration is enabled"
+    is_public: true
+    is_enabled: true
+  - key: conversation_title_model_id
+    value: null
+    description: "Model ID for generating conversation titles (uses assistant model if unset)"
+    is_public: false
+    is_enabled: true
+  - key: allow_user_create_assistants
+    value: true
+    description: "Whether to allow users to create assistants"
+    is_public: true
+    is_enabled: true
+  - key: ui_show_share_button
+    value: false
+    description: "Show share button in chat UI"
+    is_public: true
+    is_enabled: true
+  - key: ui_show_pin_button
+    value: false
+    description: "Show pin button in chat UI"
+    is_public: true
+    is_enabled: true
+  - key: ui_show_create_button
+    value: false
+    description: "Show create/new conversation button in chat UI"
+    is_public: true
+    is_enabled: true
+  - key: ui_show_assistant_dropdown
+    value: true
+    description: "Show assistant dropdown in chat header"
+    is_public: true
+    is_enabled: true
+  - key: ui_show_message_share_button
+    value: false
+    description: "Toggle visibility of the share button on individual messages."
+    is_public: true
+    is_enabled: true
+  - key: ui_show_agent_thinking
+    value: true
+    description: "Show agent thinking traces in chat messages"
+    is_public: true
+    is_enabled: true
+  - key: ui_generate_followup_questions
+    value: false
+    description: "Generate follow-up question suggestions after assistant responses"
+    is_public: true
+    is_enabled: true
+  - key: ui_followup_question_count
+    value: 3
+    description: "Maximum number of follow-up questions to generate (1-5)"
+    is_public: true
+    is_enabled: true
+  - key: chat_followup_question_limits
+    value:
+      min_count: 1
+      max_count: 5
+    description: "Hard limits for follow-up questions (min/max count)"
+    is_public: false
+    is_enabled: true
+  - key: ui_show_signup_terms
+    value: false
+    description: "Show Terms of Use and Privacy Policy links on signup form"
+    is_public: true
+    is_enabled: true
+
+  # Assistant global defaults (admin-only)
+  - key: assistant_generation_defaults
+    value:
+      temperature: 0.7
+      max_tokens: 2048
+      additional_params: {}
+    description: "Global defaults for assistant generation settings (temperature, max_tokens, LiteLLM params)"
+    is_public: false
+    is_enabled: true
+
+  - key: assistant_rag_defaults
+    value:
+      retrieval_count: 5
+      fetch_k: null
+      similarity_threshold: 0.3
+      context_max_tokens: 1200
+      search_type: similarity
+      mmr_lambda: 0.5
+      skip_smalltalk: true
+      skip_patterns:
+        - hi
+        - hello
+        - hey
+        - thanks
+        - thank you
+        - ok
+        - okay
+        - good morning
+        - good afternoon
+        - good evening
+        - bye
+        - goodbye
+        - see you
+        - how are you
+        - what's up
+        - sup
+        - yo
+        - hola
+        - greetings
+      multi_query: false
+      multi_query_count: 3
+      rerank_top_k: null
+      rerank_model_id: null
+      hybrid_enabled: false
+      hybrid_corpus_limit: 1000
+    description: "Global defaults for assistant RAG retrieval settings"
+    is_public: false
+    is_enabled: true
+
+  # RAG Ingestion Limits (Phase D)
+  - key: rag_ingestion_limits
+    value:
+      max_file_size_mb: 50
+      max_pdf_pages: 500
+      max_sheet_rows: 50000
+      max_concurrent_jobs: 3
+      max_chunks_per_document: 10000
+      allowed_file_types:
+        - pdf
+        - csv
+        - xlsx
+        - xls
+        - txt
+        - md
+        - docx
+    description: "Hard limits for RAG ingestion jobs (file size, pages, rows, concurrency)"
+    is_public: false
+    is_enabled: true
+
+  - key: rag_ingestion_defaults
+    value:
+      clean_data: false
+      dedup_strategy: replace
+      default_chunk_size: 500
+      default_chunk_overlap: 80
+      use_profile_if_available: true
+    description: "Default settings for RAG ingestion (overridable per-job)"
+    is_public: false
+    is_enabled: true
+
+# Builtin Ingestion Profiles (global templates)
+# Config schema matches IngestionProfile.config structure:
+# - columns: [{name, type, aliases}] - column definitions
+# - metadata_fields: {column_name: metadata_key} - map columns to metadata
+# - content_fields: [column_names] - columns to include in text content
+# - row_template: {format, include_labels, omit_empty, field_order, custom_template}
+ingestion_profiles:
+  - name: "Support Cases"
+    description: "Template for ingesting Excel/CSV files. Designed for columns like Subject, Description, Resolution."
+    is_builtin: true
+    is_default: false
+    file_types: ["csv", "xlsx", "xls"]
+    config:
+      columns:
+        - name: "Subject"
+          type: "string"
+          aliases: ["title", "Title", "case_subject"]
+        - name: "Description"
+          type: "string"
+          aliases: ["desc", "Details", "case_description"]
+        - name: "Resolution"
+          type: "string"
+          aliases: ["solution", "Solution", "fix", "Fix"]
+      metadata_fields:
+        "Subject": "subject"
+      content_fields:
+        - "Subject"
+        - "Description"
+        - "Resolution"
+      required_fields:
+        - "Subject"
+        - "Description"
+        - "Resolution"
+      validation_mode: "warn"
+      row_template:
+        format: "key_value"
+        include_labels: true
+        omit_empty: true
+        field_order:
+          - "Subject"
+          - "Description"
+          - "Resolution"
+        custom_template: null
+
+  - name: "Generic CSV"
+    description: "Basic template for generic tabular data. Uses all columns as content."
+    is_builtin: true
+    is_default: true
+    file_types: ["csv", "xlsx", "xls"]
+    config:
+      columns: []
+      metadata_fields: {}
+      content_fields: []
+      required_fields: []
+      validation_mode: "warn"
+      row_template:
+        format: "key_value"
+        include_labels: true
+        omit_empty: true
+        field_order: []
+        custom_template: null
+
+  - name: "Product Catalog"
+    description: "Template for product/item catalogs with SKU, name, description, price, category fields."
+    is_builtin: true
+    is_default: false
+    file_types: ["csv", "xlsx", "xls"]
+    config:
+      columns:
+        - name: "SKU"
+          type: "string"
+          aliases: ["sku", "product_sku", "Item Number", "ItemNumber", "ID"]
+        - name: "Product Name"
+          type: "string"
+          aliases: ["name", "Name", "ProductName", "Item Name", "ItemName", "Title"]
+        - name: "Description"
+          type: "string"
+          aliases: ["desc", "Details", "product_description"]
+        - name: "Price"
+          type: "number"
+          aliases: ["unit_price", "UnitPrice", "Cost", "Amount"]
+        - name: "Category"
+          type: "string"
+          aliases: ["cat", "ProductCategory", "Type", "Group"]
+      metadata_fields:
+        "SKU": "sku"
+        "Product Name": "product_name"
+        "Price": "price"
+        "Category": "category"
+      content_fields:
+        - "Product Name"
+        - "Description"
+        - "Category"
+      required_fields:
+        - "SKU"
+        - "Product Name"
+      validation_mode: "warn"
+      row_template:
+        format: "key_value"
+        include_labels: true
+        omit_empty: true
+        field_order:
+          - "Product Name"
+          - "Description"
+          - "Price"
+          - "Category"
+        custom_template: null
+
+  - name: "FAQ"
+    description: "Template for FAQ/Q&A documents with question and answer columns."
+    is_builtin: true
+    is_default: false
+    file_types: ["csv", "xlsx", "xls"]
+    config:
+      columns:
+        - name: "Question"
+          type: "string"
+          aliases: ["Q", "query", "Query", "Inquiry"]
+        - name: "Answer"
+          type: "string"
+          aliases: ["A", "response", "Response", "Reply"]
+      metadata_fields:
+        "Question": "question"
+      content_fields:
+        - "Question"
+        - "Answer"
+      required_fields:
+        - "Question"
+        - "Answer"
+      validation_mode: "fail"
+      row_template:
+        format: "custom"
+        include_labels: true
+        omit_empty: true
+        field_order: []
+        custom_template: "Question: {{ Question }}\nAnswer: {{ Answer }}"

@@ -1,0 +1,15 @@
+# Backend-specific Ruff configuration
+# This file extends the root pyproject.toml configuration
+# Place any backend-specific overrides here
+
+# Inherit from parent but allow for any local overrides
+extend = "../pyproject.toml"
+
+# Backend-specific source paths
+src = ["."]
+
+# Additional excludes specific to backend
+extend-exclude = [
+    "dist",
+    "*.egg-info",
+]

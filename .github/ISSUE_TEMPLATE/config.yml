@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and Discussions
+    url: https://github.com/yourusername/airbeeps/discussions
+    about: Ask questions and discuss ideas with the community
+  - name: Security Vulnerabilities
+    url: https://github.com/yourusername/airbeeps/security/advisories/new
+    about: Report security vulnerabilities privately (DO NOT use public issues)

@@ -1,0 +1,78 @@
+name: Documentation Issue
+description: Report an issue with documentation
+title: "[Docs]: "
+labels: ["documentation", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve our documentation!
+
+  - type: dropdown
+    id: doc-type
+    attributes:
+      label: Documentation Type
+      description: What kind of documentation issue is this?
+      options:
+        - Typo or grammar error
+        - Incorrect information
+        - Missing information
+        - Confusing explanation
+        - Code example doesn't work
+        - Broken link
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Documentation Location
+      description: Where is the issue located?
+      placeholder: "e.g. README.md, docs/configuration.md, /api/v1/chat endpoint"
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: Current Documentation
+      description: Quote or describe the current documentation (if applicable)
+      placeholder: |
+        Current text:
+        > ...
+
+  - type: textarea
+    id: issue
+    attributes:
+      label: Issue Description
+      description: Clearly describe what's wrong or missing
+      placeholder: "The documentation says X but it should say Y because..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested Improvement
+      description: How should the documentation be improved?
+      placeholder: |
+        Suggested text:
+        > ...
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other information that might help
+      placeholder: Screenshots, links, etc.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission Checks
+      options:
+        - label: I have searched existing issues to ensure this is not a duplicate
+          required: true
+        - label: I am willing to submit a PR to fix this documentation issue
+          required: false

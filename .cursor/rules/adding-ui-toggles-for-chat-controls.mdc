@@ -1,0 +1,50 @@
+---
+alwaysApply: false
+---
+
+# Cursor Notes: Adding UI toggles for chat controls
+
+This repo uses system-config keys to drive UI visibility. To add or adjust a toggle (e.g., hide/show buttons like share/pin/assistant dropdown), follow this pattern:
+
+## Backend
+
+- Add the key to `backend/airbeeps/config/seed.yaml` in the `system_configs` section:
+  - `key`: string identifier (e.g., `ui_show_message_share_button`)
+  - `value`: default boolean (usually `true` to show, `false` to hide)
+  - `description`: human-readable description
+  - `is_public`: `true` so the frontend can read it
+  - `is_enabled`: `true`
+- No DB migration is needed; rerun seeding to add new keys:
+  - `uv run scripts/bootstrap.py init` (runs migrations + seeds)
+  - or `uv run scripts/bootstrap.py config-init` (seeds only)
+
+## Frontend types/config store
+
+- Update `frontend/app/types/api.d.ts` `PublicConfig` with the new optional boolean key.
+- The config store (`frontend/app/stores/config.ts`) already exposes `config` and `getConfig`; no extra wiring is needed if the key is present in the type.
+
+## Admin UI (system config page)
+
+- File: `frontend/app/pages/admin/system-config.vue`
+  - Add a constant for the config key (e.g., `const UI_SHOW_X_KEY = "ui_show_x"`)
+  - Add a computed for the config item: `const showXConfig = computed(() => configs.value.find(...))`
+  - Add a `ref` defaulting to `true` (or `false` if hidden by default)
+  - Extend the `watch(configs, ...)` block to read the key (treat missing as `true` or `false` depending on default)
+  - Add a `handleSave...` wrapper using `saveToggleConfig`
+  - Add a `Switch + Label` row in the "Chat UI Controls" card
+- Add i18n strings in `frontend/i18n/locales/en.ts` under `admin.systemConfig.ui` (label and description).
+
+## Consuming the toggle in UI
+
+- In pages/components rendering the control, gate with a computed:
+  - `const showX = computed(() => configStore.config.<key> !== false)`
+  - Pass as a prop or v-if where the button/icon is rendered (e.g., `:enable-share="showMessageShareButton"`).
+- Refresh frontend after seeding to pick up new public config values.
+
+## Quick checklist (example: hide per-message share)
+
+1. Backend: add `ui_show_message_share_button` to `seed.yaml` system_configs (public, true).
+2. Types: add `ui_show_message_share_button?: boolean` to `PublicConfig`.
+3. Admin: add constant, computed/ref, watcher entry, save handler, and switch row; add i18n label/description.
+4. UI: gate the message share icon with the computed flag.
+5. Seed/update existing DB: run `uv run scripts/bootstrap.py init`; refresh frontend.

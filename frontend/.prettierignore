@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+.nuxt/
+.output/
+.nitro/
+
+# Cache
+.cache/
+.eslintcache
+
+# Lock files (auto-generated)
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+# Auto-generated files
+*.generated.*
+auto-imports.d.ts
+components.d.ts
+.nuxt/types/
+
+# Assets that shouldn't be formatted
+*.min.js
+*.min.css
+
+# Data files
+*.sqlite
+*.db
