@@ -10,6 +10,7 @@ This script:
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -30,7 +31,15 @@ def run_command(
 ) -> None:
     """Run a command and exit on failure."""
     print(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, check=False, cwd=cwd, shell=shell, env=env)  # noqa: S603
+
+    # On non-Windows systems, shell=True requires a string command string
+    # otherwise only the first element is executed as the command
+    if shell and sys.platform != "win32":
+        cmd_run = shlex.join(cmd)
+    else:
+        cmd_run = cmd
+
+    result = subprocess.run(cmd_run, check=False, cwd=cwd, shell=shell, env=env)  # noqa: S603
     if result.returncode != 0:
         print(f"ERROR: Command failed with exit code {result.returncode}")
         sys.exit(1)
