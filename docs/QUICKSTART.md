@@ -54,7 +54,7 @@
 
 4. **Start backend**:
    ```bash
-   uv run fastapi dev airbeeps/main.py
+   uv run fastapi dev --port 8500 airbeeps/main.py
    ```
    Backend runs at `http://localhost:8500`
 
