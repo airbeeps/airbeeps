@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { lazy } from "zod";
 import type { Assistant, Message } from "~/types/api";
 
 const route = useRoute();
@@ -17,14 +18,24 @@ const isCreatingConversation = ref(false);
 
 const { t } = useI18n();
 
-const { data: rawAssistant } = await useAPI<Assistant>(`/v1/assistants/${assistantId}`);
+const { data: rawAssistant, pending: assistantLoading } = useAPI<Assistant>(
+  `/v1/assistants/${assistantId}`,
+  {
+    lazy: true,
+  }
+);
 const assistant = useLocalizedAssistant(rawAssistant as Ref<Assistant>);
-
-if (assistant.value) {
-  useHead({
-    title: t("chat.chatWith", { name: assistant.value.name }),
-  });
-}
+watch(
+  assistant,
+  (newAssistant) => {
+    if (newAssistant) {
+      useHead({
+        title: t("chat.chatWith", { name: newAssistant.name }),
+      });
+    }
+  },
+  { immediate: true }
+);
 
 const { $api } = useNuxtApp();
 const newConversationStore = useNewConversationStore();

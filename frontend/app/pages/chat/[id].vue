@@ -497,13 +497,12 @@ onMounted(async () => {
     // Clear the conversation data after successful processing
     newConversationStore.clearConversationData(conversationId);
   } else {
-    // This might be an existing conversation, try to fetch from API
+    // This might be an existing conversation, fetch things in parallel
     isNewConversation.value = false;
-    const conversation = await fetchConversationInfo();
-
-    if (conversation) {
-      await fetchConversationMessages();
-    }
+    const [conversation] = await Promise.all([
+      fetchConversationInfo(),
+      fetchConversationMessages(),
+    ]);
   }
 
   if (conversationInfo.value) {
@@ -865,7 +864,7 @@ onUnmounted(() => {
       </Breadcrumb>
 
       <template #right>
-        <div class="flex items-center gap-2" v-if="assistant">
+        <div v-if="assistant" class="flex items-center gap-2">
           <Button
             v-if="userStore.user && showPinButton"
             variant="outline"
@@ -963,7 +962,7 @@ onUnmounted(() => {
             :is-streaming="isStreaming"
           />
 
-          <div ref="messagesEnd"></div>
+          <div ref="messagesEnd" />
         </div>
       </div>
     </div>
@@ -987,7 +986,9 @@ onUnmounted(() => {
         <div class="space-y-3">
           <div class="flex items-center gap-2">
             <Input v-model="shareDialogUrl" readonly class="flex-1" />
-            <Button variant="secondary" @click="copyShareLink">{{ t("chat.share.copy") }}</Button>
+            <Button variant="secondary" @click="copyShareLink">
+              {{ t("chat.share.copy") }}
+            </Button>
           </div>
           <p class="text-muted-foreground text-xs break-all">
             {{ shareDialogUrl }}
@@ -1007,9 +1008,9 @@ onUnmounted(() => {
     >
       <button
         v-if="!shouldAutoScroll && hasScrollableContent && messages.length > 0"
-        @click="forceScrollToBottom('smooth')"
         class="bg-foreground/90 text-background hover:bg-foreground border-border/20 absolute bottom-28 left-1/2 z-40 flex h-8 w-8 -translate-x-1/2 items-center justify-center rounded-full border shadow-lg backdrop-blur-sm transition-all duration-200"
         :title="t('chat.scrollToBottom')"
+        @click="forceScrollToBottom('smooth')"
       >
         <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path

@@ -68,7 +68,7 @@ onMounted(async () => {
 });
 
 const showCreateButton = computed(() => {
-  return !!(currentUser.value?.is_superuser && allowCreate.value);
+  return Boolean(currentUser.value?.is_superuser && allowCreate.value);
 });
 
 // Filter state
@@ -104,22 +104,22 @@ const {
   pending,
   error,
   refresh,
-} = await useAPI<Assistant[]>("/v1/assistants", {
+} = useAPI<Assistant[]>("/v1/assistants", {
   query: queryParams,
+  lazy: true,
 });
 
 // Fetch pinned assistants separately for the top section
-const { data: pinnedAssistants, refresh: refreshPinned } = await useAPI<Assistant[]>(
-  "/v1/assistants",
-  {
-    query: { scope: "pinned", limit: 100 },
-    immediate: false,
-  }
-);
+const { data: pinnedAssistants, refresh: refreshPinned } = useAPI<Assistant[]>("/v1/assistants", {
+  query: { scope: "pinned", limit: 100 },
+  lazy: true,
+});
 
-if (currentUser.value) {
-  await refreshPinned();
-}
+onMounted(() => {
+  if (currentUser.value) {
+    refreshPinned();
+  }
+});
 
 const assistantList = computed(() => assistants.value ?? []);
 const pinnedAssistantList = computed(() => pinnedAssistants.value ?? []);
@@ -271,7 +271,7 @@ onUnmounted(() => {
 
 <template>
   <div class="absolute inset-0 flex flex-col overflow-hidden rounded-[inherit]">
-    <AppHeader></AppHeader>
+    <AppHeader />
     <div class="mx-auto flex w-full max-w-[1600px] flex-1 flex-col overflow-y-auto px-4 py-6">
       <!-- Pinned Section -->
       <div
@@ -307,12 +307,12 @@ onUnmounted(() => {
                   <CardTitle class="truncate text-base leading-tight font-medium">
                     <NuxtLink
                       v-if="assistant.status !== 'DRAFT'"
+                      v-slot="{ href, navigate }"
                       :to="`/chatwith/${assistant.id}`"
                       custom
-                      v-slot="{ href, navigate }"
                     >
-                      <a :href="`${origin}${href}`" @click="navigate" class="focus:outline-none">
-                        <span class="absolute inset-0" aria-hidden="true"></span>
+                      <a :href="`${origin}${href}`" class="focus:outline-none" @click="navigate">
+                        <span class="absolute inset-0" aria-hidden="true" />
                         {{ assistant.name }}
                       </a>
                     </NuxtLink>
@@ -329,7 +329,7 @@ onUnmounted(() => {
               </div>
             </CardHeader>
             <CardContent>
-              <div class="mb-4 flex flex-wrap gap-1" v-if="assistant.model?.capabilities?.length">
+              <div v-if="assistant.model?.capabilities?.length" class="mb-4 flex flex-wrap gap-1">
                 <Badge
                   v-for="cap in assistant.model.capabilities"
                   :key="cap"
@@ -339,7 +339,9 @@ onUnmounted(() => {
                   {{ getCapabilityLabel(cap) }}
                 </Badge>
               </div>
-              <p class="text-muted-foreground line-clamp-3 text-sm">{{ assistant.description }}</p>
+              <p class="text-muted-foreground line-clamp-3 text-sm">
+                {{ assistant.description }}
+              </p>
             </CardContent>
             <CardFooter class="relative z-10 flex justify-start gap-1 px-6 pt-0 pb-4">
               <Button
@@ -347,8 +349,8 @@ onUnmounted(() => {
                 variant="ghost"
                 size="icon"
                 class="text-muted-foreground hover:text-primary h-8 w-8"
-                @click="(e: MouseEvent) => handlePin(assistant, e)"
                 :title="assistant.is_pinned ? t('assistants.unpin') : t('assistants.pin')"
+                @click="(e: MouseEvent) => handlePin(assistant, e)"
               >
                 <PinOff v-if="assistant.is_pinned" class="h-4 w-4 fill-current" />
                 <Pin v-else class="h-4 w-4" />
@@ -367,8 +369,8 @@ onUnmounted(() => {
                 variant="ghost"
                 size="icon"
                 class="text-muted-foreground hover:text-primary h-8 w-8"
-                @click="(e: MouseEvent) => handleCopy(assistant, e)"
                 :title="t('assistants.copy')"
+                @click="(e: MouseEvent) => handleCopy(assistant, e)"
               >
                 <Copy class="h-4 w-4" />
               </Button>
@@ -484,12 +486,16 @@ onUnmounted(() => {
       <!-- List content area -->
       <div class="pr-2 pb-4">
         <div v-if="pending" class="flex justify-center py-12">
-          <div class="border-primary h-8 w-8 animate-spin rounded-full border-b-2"></div>
+          <div class="border-primary h-8 w-8 animate-spin rounded-full border-b-2" />
         </div>
 
         <div v-else-if="error" class="py-12 text-center">
-          <p class="text-destructive mb-4">{{ $t("assistants.failedToLoad") }}</p>
-          <Button @click="refresh" variant="outline">{{ $t("assistants.tryAgain") }}</Button>
+          <p class="text-destructive mb-4">
+            {{ $t("assistants.failedToLoad") }}
+          </p>
+          <Button variant="outline" @click="refresh">
+            {{ $t("assistants.tryAgain") }}
+          </Button>
         </div>
 
         <div v-else-if="!assistants || assistants.length === 0" class="py-12 text-center">
@@ -508,8 +514,12 @@ onUnmounted(() => {
               />
             </svg>
           </div>
-          <h3 class="mb-2 text-lg font-semibold">{{ $t("assistants.noAssistants") }}</h3>
-          <p class="text-muted-foreground">{{ $t("assistants.noAssistantsDescription") }}</p>
+          <h3 class="mb-2 text-lg font-semibold">
+            {{ $t("assistants.noAssistants") }}
+          </h3>
+          <p class="text-muted-foreground">
+            {{ $t("assistants.noAssistantsDescription") }}
+          </p>
         </div>
 
         <div v-else class="grid gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -537,12 +547,12 @@ onUnmounted(() => {
                   <CardTitle class="truncate text-base leading-tight font-medium">
                     <NuxtLink
                       v-if="assistant.status !== 'DRAFT'"
+                      v-slot="{ href, navigate }"
                       :to="`/chatwith/${assistant.id}`"
                       custom
-                      v-slot="{ href, navigate }"
                     >
-                      <a :href="`${origin}${href}`" @click="navigate" class="focus:outline-none">
-                        <span class="absolute inset-0" aria-hidden="true"></span>
+                      <a :href="`${origin}${href}`" class="focus:outline-none" @click="navigate">
+                        <span class="absolute inset-0" aria-hidden="true" />
                         {{ assistant.name }}
                       </a>
                     </NuxtLink>
@@ -559,7 +569,7 @@ onUnmounted(() => {
               </div>
             </CardHeader>
             <CardContent>
-              <div class="mb-4 flex flex-wrap gap-1" v-if="assistant.model?.capabilities?.length">
+              <div v-if="assistant.model?.capabilities?.length" class="mb-4 flex flex-wrap gap-1">
                 <Badge
                   v-for="cap in assistant.model.capabilities"
                   :key="cap"
@@ -569,7 +579,9 @@ onUnmounted(() => {
                   {{ getCapabilityLabel(cap) }}
                 </Badge>
               </div>
-              <p class="text-muted-foreground line-clamp-3 text-sm">{{ assistant.description }}</p>
+              <p class="text-muted-foreground line-clamp-3 text-sm">
+                {{ assistant.description }}
+              </p>
             </CardContent>
             <CardFooter class="relative z-10 flex justify-start gap-1 px-6 pt-0 pb-4">
               <Button
@@ -577,8 +589,8 @@ onUnmounted(() => {
                 variant="ghost"
                 size="icon"
                 class="text-muted-foreground hover:text-primary h-8 w-8"
-                @click="(e: MouseEvent) => handlePin(assistant, e)"
                 :title="assistant.is_pinned ? t('assistants.unpin') : t('assistants.pin')"
+                @click="(e: MouseEvent) => handlePin(assistant, e)"
               >
                 <PinOff v-if="assistant.is_pinned" class="h-4 w-4 fill-current" />
                 <Pin v-else class="h-4 w-4" />
@@ -597,8 +609,8 @@ onUnmounted(() => {
                 variant="ghost"
                 size="icon"
                 class="text-muted-foreground hover:text-primary h-8 w-8"
-                @click="(e: MouseEvent) => handleCopy(assistant, e)"
                 :title="t('assistants.copy')"
+                @click="(e: MouseEvent) => handleCopy(assistant, e)"
               >
                 <Copy class="h-4 w-4" />
               </Button>
@@ -609,5 +621,3 @@ onUnmounted(() => {
     </div>
   </div>
 </template>
-
-<style scoped></style>

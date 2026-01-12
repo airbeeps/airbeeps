@@ -9,8 +9,9 @@ const route = useRoute();
 const shareId = computed(() => route.params.id as string);
 const { t } = useI18n();
 
-const { data, pending, error, refresh } = await useAPI<ConversationSharePublicResponse>(
-  () => `/v1/share-links/${shareId.value}`
+const { data, pending, error, refresh } = useAPI<ConversationSharePublicResponse>(
+  () => `/v1/share-links/${shareId.value}`,
+  { lazy: true }
 );
 
 const shareData = computed(() => data.value);
@@ -96,8 +97,10 @@ const goToAssistantChat = () => {
           <div class="flex items-center gap-3">
             <AssistantAvatar :assistant="assistantAvatarData" class="size-12" />
             <div>
-              <p class="text-lg font-medium">{{ assistantName }}</p>
-              <p class="text-muted-foreground text-sm" v-if="assistantDescription">
+              <p class="text-lg font-medium">
+                {{ assistantName }}
+              </p>
+              <p v-if="assistantDescription" class="text-muted-foreground text-sm">
                 {{ assistantDescription }}
               </p>
             </div>
@@ -121,9 +124,15 @@ const goToAssistantChat = () => {
       </section>
 
       <section v-else-if="error" class="space-y-3 text-center">
-        <p class="text-lg font-semibold">{{ t("share.notFoundTitle") }}</p>
-        <p class="text-muted-foreground text-sm">{{ t("share.notFoundDescription") }}</p>
-        <Button variant="outline" @click="refresh">{{ t("common.retry") }}</Button>
+        <p class="text-lg font-semibold">
+          {{ t("share.notFoundTitle") }}
+        </p>
+        <p class="text-muted-foreground text-sm">
+          {{ t("share.notFoundDescription") }}
+        </p>
+        <Button variant="outline" @click="refresh">
+          {{ t("common.retry") }}
+        </Button>
       </section>
 
       <section v-else>

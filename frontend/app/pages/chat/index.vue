@@ -20,16 +20,18 @@ const {
   data: pinnedAssistants,
   pending: pinnedPending,
   refresh: refreshPinned,
-} = await useAPI<Assistant[]>("/v1/assistants", {
+} = useAPI<Assistant[]>("/v1/assistants", {
   query: { scope: "pinned", limit: 50 },
+  lazy: true,
 });
 
 const {
   data: popularAssistants,
   pending: popularPending,
   refresh: refreshPopular,
-} = await useAPI<Assistant[]>("/v1/assistants", {
+} = useAPI<Assistant[]>("/v1/assistants", {
   query: { sort_by: "usage_count", order: "desc", limit: 50 },
+  lazy: true,
 });
 
 const assistants = computed<Assistant[]>(() => {
@@ -70,7 +72,7 @@ const route = useRoute();
 
 const loadingAssistants = computed(() => pinnedPending.value || popularPending.value);
 
-const isAdmin = computed(() => !!userStore.user?.is_superuser);
+const isAdmin = computed(() => Boolean(userStore.user?.is_superuser));
 
 const ONBOARDING_DISMISS_KEY = "airbeeps.onboarding.no_assistants.dismissed";
 const onboardingDismissed = ref(false);
@@ -282,7 +284,7 @@ watchEffect(() => {
     </AppHeader>
 
     <div v-if="loadingAssistants" class="flex flex-1 items-center justify-center">
-      <div class="border-primary h-8 w-8 animate-spin rounded-full border-b-2"></div>
+      <div class="border-primary h-8 w-8 animate-spin rounded-full border-b-2" />
     </div>
 
     <div v-else-if="!selectedAssistant" class="flex flex-1 items-center justify-center px-4">
@@ -362,7 +364,9 @@ watchEffect(() => {
       <!-- Non-modal empty state (still visible after dismiss) -->
       <div v-if="!onboardingOpen" class="w-full max-w-2xl text-center">
         <div class="border-border/70 bg-card/70 rounded-2xl border p-8 shadow-sm backdrop-blur-sm">
-          <p class="text-lg font-semibold">{{ $t("assistants.noAssistants") }}</p>
+          <p class="text-lg font-semibold">
+            {{ $t("assistants.noAssistants") }}
+          </p>
           <p class="text-muted-foreground mt-2 text-sm">
             {{
               isAdmin
@@ -408,8 +412,8 @@ watchEffect(() => {
       />
 
       <ChatMessage
-        v-else
         v-for="message in messages"
+        v-else
         :key="message.id"
         :message="message"
         :assistant="selectedAssistant"
