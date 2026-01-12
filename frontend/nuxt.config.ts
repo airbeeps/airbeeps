@@ -14,6 +14,45 @@ export default defineNuxtConfig({
   css: ["~/assets/css/tailwind.css", "katex/dist/katex.min.css"],
   vite: {
     plugins: [tailwindcss()],
+    optimizeDeps: {
+      // Pre-optimize heavy dependencies to avoid re-optimization during navigation
+      include: [
+        // Markdown rendering (used in chat messages)
+        "markdown-it",
+        "markdown-it-texmath",
+        "highlight.js",
+        "katex",
+
+        // PDF viewer (used in knowledge base)
+        "pdfjs-dist",
+
+        // Charts (used in admin analytics)
+        "@unovis/ts",
+        "@unovis/vue",
+
+        // Tables (used in admin pages)
+        "@tanstack/vue-table",
+
+        // Form validation
+        "vee-validate",
+        "@vee-validate/zod",
+        "zod",
+
+        // UI components
+        "lucide-vue-next",
+        "reka-ui",
+        "vue-sonner",
+
+        // Utilities
+        "class-variance-authority",
+        "clsx",
+        "tailwind-merge",
+        "@vueuse/core",
+        "path-to-regexp",
+      ],
+      // Exclude @nuxt/content internal dependencies (handled by the module itself)
+      exclude: ["@nuxtjs/mdc"],
+    },
   },
 
   app: {
@@ -24,9 +63,9 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     public: {
-      appName: appName,
+      appName,
       appVersion: "0.0.0", // overridden by NUXT_PUBLIC_APP_VERSION
-      apiBaseUrl: apiBaseUrl,
+      apiBaseUrl,
       enableOAuthProviders: enableOAuth !== "false",
     },
   },
