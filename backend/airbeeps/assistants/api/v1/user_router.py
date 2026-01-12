@@ -50,6 +50,10 @@ async def list_assistants(
         description="Sort field: created_at, updated_at, name, usage_count",
     ),
     order: str | None = Query("desc", description="Sort order: asc or desc"),
+    limit: int = Query(
+        50, ge=1, le=200, description="Maximum number of results to return"
+    ),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
     session: AsyncSession = Depends(get_async_session),
     current_user: User | None = Depends(current_active_user_optional),
 ):
@@ -135,6 +139,9 @@ async def list_assistants(
         query = query.order_by(sort_field.desc())
     else:
         query = query.order_by(sort_field.asc())
+
+    # Apply limit and offset for pagination
+    query = query.limit(limit).offset(offset)
 
     result = await session.execute(query)
     assistants = result.scalars().all()
