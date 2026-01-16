@@ -78,6 +78,8 @@ export default defineI18nLocale(async (locale) => {
         save: "Save",
         cancel: "Cancel",
         selected: "{count} selected",
+        searchPlaceholder: "Search...",
+        noResults: "No results found",
         jsonPlaceholder: "Please enter valid JSON format",
         jsonHint: "Please enter valid JSON format",
         formatJson: "Format",
@@ -1260,10 +1262,10 @@ export default defineI18nLocale(async (locale) => {
             notSet: "Not set",
           },
           formFields: {
-            modelTemplate: "Model Preset (Optional)",
+            modelTemplate: "Available Models",
             modelTemplatePlaceholder: "Select a model or enter manually",
             modelTemplateHelp:
-              "For providers with auto-discovery (OpenAI, xAI), you'll see the latest models directly from the provider API. Otherwise, you'll see curated presets from our catalog. You can also enter a custom model name manually.",
+              "Select from available models discovered from the provider, or choose 'None' to enter a custom model name manually.",
             noTemplate: "None (Enter manually)",
             discoveredPrefix: "Discovered",
             modelName: "Model Identifier",

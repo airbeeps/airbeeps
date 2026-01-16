@@ -71,7 +71,9 @@ class TestAdminAuthorization:
         provider_data = {
             "name": "test-provider",
             "display_name": "Test Provider",
-            "interface_type": "OPENAI",
+            "category": "PROVIDER_SPECIFIC",
+            "is_openai_compatible": False,
+            "litellm_provider": "openai",
             "api_base_url": "https://api.test.com/v1",
             "api_key": "test-key",
             "status": "ACTIVE",

@@ -61,7 +61,8 @@ def list_provider_templates() -> list[dict[str, Any]]:
                 "description": p.get("description"),
                 "website": p.get("website"),
                 "api_base_url": p.get("api_base_url"),
-                "interface_type": p.get("interface_type"),
+                "category": p.get("category"),
+                "is_openai_compatible": p.get("is_openai_compatible", False),
                 "litellm_provider": p.get("litellm_provider"),
             }
         )

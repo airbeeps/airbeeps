@@ -37,7 +37,9 @@ def make_user_data(
 def make_provider_data(
     name: str | None = None,
     display_name: str | None = None,
-    interface_type: str = "OPENAI",
+    category: str = "PROVIDER_SPECIFIC",
+    is_openai_compatible: bool = False,
+    litellm_provider: str = "openai",
     api_base_url: str = "https://api.test.com/v1",
     api_key: str = "test-api-key",
     status: str = "ACTIVE",
@@ -48,7 +50,9 @@ def make_provider_data(
     Args:
         name: Provider unique name (auto-generated if not provided)
         display_name: Human-readable name
-        interface_type: API interface type (OPENAI, ANTHROPIC, etc.)
+        category: Provider category (OPENAI_COMPATIBLE, PROVIDER_SPECIFIC, CUSTOM, LOCAL)
+        is_openai_compatible: Whether custom endpoint is OpenAI-compatible
+        litellm_provider: LiteLLM provider identifier
         api_base_url: API base URL
         api_key: API key
         status: Provider status
@@ -60,7 +64,9 @@ def make_provider_data(
     return {
         "name": name or f"test-provider-{unique_id}",
         "display_name": display_name or f"Test Provider {unique_id}",
-        "interface_type": interface_type,
+        "category": category,
+        "is_openai_compatible": is_openai_compatible,
+        "litellm_provider": litellm_provider,
         "api_base_url": api_base_url,
         "api_key": api_key,
         "status": status,

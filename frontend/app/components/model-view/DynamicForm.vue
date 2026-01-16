@@ -2,6 +2,19 @@
 import { ref, computed, watch, onMounted, onUnmounted, toRaw } from "vue";
 import { Save, Loader2, Eye, EyeOff } from "lucide-vue-next";
 
+const props = withDefaults(defineProps<Props>(), {
+  loading: false,
+  submitText: "",
+  showCancel: false,
+  cancelText: "",
+});
+
+const emit = defineEmits<{
+  submit: [data: T];
+  cancel: [];
+  change: [data: Record<string, any>];
+}>();
+
 const { t } = useI18n();
 
 import { Button } from "~/components/ui/button";
@@ -11,7 +24,9 @@ import { Textarea } from "~/components/ui/textarea";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
@@ -21,6 +36,7 @@ import { Switch } from "~/components/ui/switch";
 export interface FieldOption {
   label: string;
   value: string | number;
+  group?: string;
 }
 
 export interface FormField {
@@ -95,22 +111,9 @@ interface Props {
   cancelText?: string;
 }
 
-const props = withDefaults(defineProps<Props>(), {
-  loading: false,
-  submitText: "",
-  showCancel: false,
-  cancelText: "",
-});
-
 // Computed i18n defaults
 const computedSubmitText = computed(() => props.submitText || t("components.dynamicForm.save"));
 const computedCancelText = computed(() => props.cancelText || t("components.dynamicForm.cancel"));
-
-const emit = defineEmits<{
-  submit: [data: T];
-  cancel: [];
-  change: [data: Record<string, any>];
-}>();
 
 // State management
 const formData = ref<Record<string, any>>({});
@@ -120,6 +123,8 @@ const isInitialized = ref(false);
 const passwordVisibility = ref<Record<string, boolean>>({});
 // Track which password fields have server values (not returned for security)
 const passwordFieldsWithServerValue = ref<Set<string>>(new Set());
+// Track search queries for select fields with many options
+const selectSearchQueries = ref<Record<string, string>>({});
 
 // Unsaved changes tracking (global)
 const unsavedChangesStore = useUnsavedChangesStore();
@@ -170,6 +175,49 @@ const getAutocomplete = (field: FormField): string | undefined => {
 const getOptions = (field: FormField): FieldOption[] => {
   if (!field.options) return [];
   return typeof field.options === "function" ? field.options(formData.value) : field.options;
+};
+
+const getGroupedOptions = (field: FormField) => {
+  const options = getOptions(field);
+  const searchQuery = selectSearchQueries.value[field.name]?.toLowerCase() || "";
+
+  // Filter options by search query
+  const filteredOptions = searchQuery
+    ? options.filter(
+        (opt) =>
+          opt.label.toLowerCase().includes(searchQuery) ||
+          opt.value.toString().toLowerCase().includes(searchQuery)
+      )
+    : options;
+
+  // Check if any option has a group
+  const hasGroups = filteredOptions.some((opt) => opt.group);
+
+  if (!hasGroups) {
+    return { hasGroups: false, ungrouped: filteredOptions, grouped: {} };
+  }
+
+  // Group options
+  const grouped: Record<string, FieldOption[]> = {};
+  const ungrouped: FieldOption[] = [];
+
+  filteredOptions.forEach((opt) => {
+    if (opt.group) {
+      if (!grouped[opt.group]) {
+        grouped[opt.group] = [];
+      }
+      grouped[opt.group].push(opt);
+    } else {
+      ungrouped.push(opt);
+    }
+  });
+
+  return { hasGroups: true, ungrouped, grouped };
+};
+
+const shouldShowSearch = (field: FormField): boolean => {
+  const options = getOptions(field);
+  return options.length > 10; // Show search if more than 10 options
 };
 
 // Initialize form data
@@ -519,7 +567,7 @@ defineExpose({
 </script>
 
 <template>
-  <form @submit.prevent="handleSubmit" class="space-y-4" autocomplete="off">
+  <form class="space-y-4" autocomplete="off" @submit.prevent="handleSubmit">
     <div v-for="field in fields" :key="field.name" class="space-y-2">
       <Label :for="field.name" class="text-sm font-medium">
         {{ field.label }}
@@ -530,9 +578,9 @@ defineExpose({
       <Input
         v-if="field.type === 'text' || field.type === 'email'"
         :id="field.name"
+        v-model="formData[field.name]"
         :name="getHtmlName(field)"
         :autocomplete="getAutocomplete(field)"
-        v-model="formData[field.name]"
         :type="field.type"
         :placeholder="field.placeholder"
         :disabled="field.disabled || loading"
@@ -546,9 +594,9 @@ defineExpose({
         <div class="relative">
           <Input
             :id="field.name"
+            v-model="formData[field.name]"
             :name="getHtmlName(field)"
             :autocomplete="getAutocomplete(field)"
-            v-model="formData[field.name]"
             :type="passwordVisibility[field.name] ? 'text' : 'password'"
             :placeholder="
               passwordFieldsWithServerValue.has(field.name) && !formData[field.name]
@@ -567,8 +615,8 @@ defineExpose({
             v-if="formData[field.name]"
             type="button"
             class="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
-            @click="passwordVisibility[field.name] = !passwordVisibility[field.name]"
             :disabled="field.disabled || loading"
+            @click="passwordVisibility[field.name] = !passwordVisibility[field.name]"
           >
             <Eye v-if="!passwordVisibility[field.name]" class="h-4 w-4" />
             <EyeOff v-else class="h-4 w-4" />
@@ -586,9 +634,9 @@ defineExpose({
       <Input
         v-else-if="field.type === 'number'"
         :id="field.name"
+        v-model.number="formData[field.name]"
         :name="getHtmlName(field)"
         :autocomplete="getAutocomplete(field)"
-        v-model.number="formData[field.name]"
         type="number"
         :placeholder="field.placeholder"
         :disabled="field.disabled || loading"
@@ -624,13 +672,70 @@ defineExpose({
           <SelectValue :placeholder="field.placeholder" />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem
-            v-for="option in getOptions(field)"
-            :key="option.value"
-            :value="option.value.toString()"
+          <!-- Search input for large lists - sticky at top -->
+          <div
+            v-if="shouldShowSearch(field)"
+            class="bg-popover sticky top-0 z-10 border-b px-2 py-1.5"
           >
-            {{ option.label }}
-          </SelectItem>
+            <Input
+              v-model="selectSearchQueries[field.name]"
+              :placeholder="t('components.dynamicForm.searchPlaceholder')"
+              class="h-8"
+              @click.stop
+              @keydown.stop
+            />
+          </div>
+
+          <template v-if="getGroupedOptions(field).hasGroups">
+            <!-- Ungrouped options first -->
+            <template v-if="getGroupedOptions(field).ungrouped.length > 0">
+              <SelectItem
+                v-for="option in getGroupedOptions(field).ungrouped"
+                :key="option.value"
+                :value="option.value.toString()"
+              >
+                {{ option.label }}
+              </SelectItem>
+            </template>
+
+            <!-- Grouped options -->
+            <SelectGroup
+              v-for="(groupOptions, groupName) in getGroupedOptions(field).grouped"
+              :key="groupName"
+            >
+              <SelectLabel>{{ groupName }}</SelectLabel>
+              <SelectItem
+                v-for="option in groupOptions"
+                :key="option.value"
+                :value="option.value.toString()"
+              >
+                {{ option.label }}
+              </SelectItem>
+            </SelectGroup>
+          </template>
+
+          <!-- Non-grouped options -->
+          <template v-else>
+            <SelectItem
+              v-for="option in getGroupedOptions(field).ungrouped"
+              :key="option.value"
+              :value="option.value.toString()"
+            >
+              {{ option.label }}
+            </SelectItem>
+          </template>
+
+          <!-- No results message -->
+          <div
+            v-if="
+              shouldShowSearch(field) &&
+              getGroupedOptions(field).ungrouped.length === 0 &&
+              Object.keys(getGroupedOptions(field).grouped).length === 0
+            "
+            class="text-muted-foreground px-2 py-6 text-center text-sm"
+          >
+            {{ t("components.dynamicForm.noResults") }}
+          </div>
         </SelectContent>
       </Select>
 
@@ -648,17 +753,17 @@ defineExpose({
             class="flex items-center space-x-2"
           >
             <input
-              type="checkbox"
               :id="`${field.name}-${option.value}`"
+              type="checkbox"
               :checked="isMultiSelectOptionSelected(field.name, option.value)"
+              :disabled="field.disabled || loading"
+              class="text-primary focus:ring-primary h-4 w-4 rounded border-gray-300"
               @change="
                 (event: Event) => {
                   const target = event.target as HTMLInputElement;
                   toggleMultiSelectOption(field.name, option.value, target.checked);
                 }
               "
-              :disabled="field.disabled || loading"
-              class="text-primary focus:ring-primary h-4 w-4 rounded border-gray-300"
             />
             <Label
               :for="`${field.name}-${option.value}`"
@@ -724,9 +829,9 @@ defineExpose({
               type="button"
               variant="ghost"
               size="sm"
-              @click="formatJson(field.name)"
               :disabled="field.disabled || loading"
               class="h-6 px-2 text-xs"
+              @click="formatJson(field.name)"
             >
               {{ t("components.dynamicForm.formatJson") }}
             </Button>
@@ -734,9 +839,9 @@ defineExpose({
               type="button"
               variant="ghost"
               size="sm"
-              @click="minifyJson(field.name)"
               :disabled="field.disabled || loading"
               class="h-6 px-2 text-xs"
+              @click="minifyJson(field.name)"
             >
               {{ t("components.dynamicForm.minifyJson") }}
             </Button>
@@ -756,14 +861,14 @@ defineExpose({
     </div>
 
     <!-- Form action buttons -->
-    <slot name="actions" :onSubmit="handleSubmit" :onCancel="handleCancel">
+    <slot name="actions" :on-submit="handleSubmit" :on-cancel="handleCancel">
       <div class="flex justify-end gap-2 pt-4">
         <Button
           v-if="showCancel"
           type="button"
           variant="outline"
-          @click="handleCancel"
           :disabled="loading"
+          @click="handleCancel"
         >
           {{ computedCancelText }}
         </Button>

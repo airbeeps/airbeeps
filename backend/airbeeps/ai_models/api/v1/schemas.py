@@ -5,9 +5,9 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from airbeeps.ai_models.models import (
-    PROVIDER_INTERFACE_TYPES,
     ModelAssetStatusEnum,
     ModelStatusEnum,
+    ProviderCategoryEnum,
     ProviderStatusEnum,
 )
 
@@ -39,26 +39,27 @@ class ModelProviderBase(BaseModel):
     description: str | None = Field(None, description="Provider description")
     website: str | None = Field(None, max_length=500, description="Provider website")
     api_base_url: str = Field(..., max_length=500, description="API base URL")
-    interface_type: str = Field(
-        PROVIDER_INTERFACE_TYPES["CUSTOM"], description="Interface type"
+
+    # New category system
+    category: ProviderCategoryEnum = Field(
+        ProviderCategoryEnum.PROVIDER_SPECIFIC,
+        description="Provider category: OPENAI_COMPATIBLE, PROVIDER_SPECIFIC, CUSTOM, or LOCAL",
     )
-    litellm_provider: str | None = Field(
-        None,
+
+    is_openai_compatible: bool = Field(
+        False,
+        description="For CUSTOM category: whether endpoint follows OpenAI API format",
+    )
+
+    litellm_provider: str = Field(
+        ...,
         max_length=100,
-        description="LiteLLM custom provider name (e.g., 'groq', 'together_ai', 'mistral'). "
-        "Required for OpenAI-compatible providers that need special handling in LiteLLM.",
+        description="LiteLLM provider identifier (e.g., 'groq', 'anthropic', 'gemini', 'openai')",
     )
+
     status: ProviderStatusEnum = Field(
         ProviderStatusEnum.ACTIVE, description="Provider status"
     )
-
-    @field_validator("interface_type")
-    @classmethod
-    def validate_interface_type(cls, v):
-        if v not in PROVIDER_INTERFACE_TYPES.values():
-            allowed_types = list(PROVIDER_INTERFACE_TYPES.values())
-            raise ValueError(f"interface_type must be one of: {allowed_types}")
-        return v
 
     @field_validator("template_id", mode="before")
     @classmethod
@@ -192,10 +193,11 @@ class ProviderTemplateResponse(BaseModel):
     description: str | None = Field(None, description="Provider template description")
     website: str | None = Field(None, description="Provider website")
     api_base_url: str = Field(..., description="Default API base URL")
-    interface_type: str = Field(..., description="Interface type")
-    litellm_provider: str | None = Field(
-        None, description="LiteLLM custom provider name (if applicable)"
+    category: str = Field(..., description="Provider category")
+    is_openai_compatible: bool = Field(
+        False, description="Whether endpoint is OpenAI-compatible"
     )
+    litellm_provider: str = Field(..., description="LiteLLM provider identifier")
 
 
 class ModelTemplateResponse(BaseModel):

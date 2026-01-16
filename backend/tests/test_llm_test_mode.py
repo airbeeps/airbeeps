@@ -32,10 +32,11 @@ class TestLLMTestMode:
 
         # Create a mock provider
         class MockProvider:
-            interface_type = "OPENAI"
+            category = "PROVIDER_SPECIFIC"
+            is_openai_compatible = False
+            litellm_provider = "openai"
             api_key = "test-key"
             api_base_url = "https://api.test.com"
-            litellm_provider = None
 
         provider = MockProvider()
 
@@ -127,10 +128,11 @@ class TestLLMTestMode:
             from airbeeps.ai_models.client_factory import create_chat_model
 
             class MockProvider:
-                interface_type = "OPENAI"
+                category = "PROVIDER_SPECIFIC"
+                is_openai_compatible = False
+                litellm_provider = "openai"
                 api_key = "test-key"
                 api_base_url = "https://api.test.com"
-                litellm_provider = None
 
             provider = MockProvider()
 

@@ -18,30 +18,92 @@ type ProviderTemplate = {
   id: string;
   display_name: string;
   description?: string;
-  website?: string;
-  api_base_url: string;
-  interface_type: string;
-  litellm_provider?: string | null;
+  docs_url?: string;
+  default_base_url: string;
+  category: string;
 };
 
-const { data: providerTemplates } = useAPI<ProviderTemplate[]>("/v1/admin/provider-templates", {
-  server: false,
+type ProvidersByCategory = {
+  OPENAI_COMPATIBLE: ProviderTemplate[];
+  PROVIDER_SPECIFIC: ProviderTemplate[];
+  CUSTOM: ProviderTemplate[];
+  LOCAL: ProviderTemplate[];
+};
+
+const { data: providersByCategory } = useAPI<ProvidersByCategory>(
+  "/v1/admin/litellm-providers/by-category",
+  {
+    server: false,
+  }
+);
+
+const providerTemplates = computed(() => {
+  if (!providersByCategory.value) return [];
+  const all: ProviderTemplate[] = [];
+  Object.values(providersByCategory.value).forEach((providers) => {
+    all.push(...providers);
+  });
+  return all;
 });
 
 const providerTemplateMap = computed(() => {
   const map: Record<string, ProviderTemplate> = {};
-  (providerTemplates.value ?? []).forEach((p) => {
+  providerTemplates.value.forEach((p) => {
     map[p.id] = p;
   });
   return map;
 });
 
-const providerTemplateOptions = computed(() =>
-  (providerTemplates.value ?? []).map((p) => ({
-    label: p.display_name,
-    value: p.id,
-  }))
-);
+const providerTemplateOptions = computed(() => {
+  if (!providersByCategory.value) return [];
+
+  const options: { label: string; value: string; group?: string }[] = [];
+
+  // Add OpenAI-compatible providers at the top
+  if (providersByCategory.value.OPENAI_COMPATIBLE?.length > 0) {
+    providersByCategory.value.OPENAI_COMPATIBLE.forEach((p) => {
+      options.push({
+        label: p.display_name,
+        value: p.id,
+        group: "OpenAI Compatible",
+      });
+    });
+  }
+
+  // Add custom endpoint option
+  if (providersByCategory.value.CUSTOM?.length > 0) {
+    providersByCategory.value.CUSTOM.forEach((p) => {
+      options.push({
+        label: p.display_name,
+        value: p.id,
+        group: "Custom Endpoint",
+      });
+    });
+  }
+
+  // Add other providers (provider-specific and local)
+  if (providersByCategory.value.PROVIDER_SPECIFIC?.length > 0) {
+    providersByCategory.value.PROVIDER_SPECIFIC.forEach((p) => {
+      options.push({
+        label: p.display_name,
+        value: p.id,
+        group: "Other Providers",
+      });
+    });
+  }
+
+  if (providersByCategory.value.LOCAL?.length > 0) {
+    providersByCategory.value.LOCAL.forEach((p) => {
+      options.push({
+        label: p.display_name,
+        value: p.id,
+        group: "Other Providers",
+      });
+    });
+  }
+
+  return options;
+});
 
 const lastAppliedTemplateId = ref<string | null>(null);
 
@@ -52,7 +114,7 @@ const handleProviderRowAction = async (action: any, row: Provider) => {
         method: "POST",
       });
       if (res?.ok) {
-        toast.success(t("admin.pages.modelProviders.actions.testConnectionSuccess"));
+        toast.success(res.message || t("admin.pages.modelProviders.actions.testConnectionSuccess"));
       } else {
         // Display the error message from backend
         const errorMsg =
@@ -64,6 +126,26 @@ const handleProviderRowAction = async (action: any, row: Provider) => {
       return;
     }
 
+    if (action.key === "discover-models-quick") {
+      const models = await $api<string[]>(
+        `/v1/admin/providers/${row.id}/discover-models?method=quick`,
+        { method: "GET" }
+      );
+      toast.success(`Found ${models?.length || 0} models (quick scan)`);
+      return;
+    }
+
+    if (action.key === "discover-models-comprehensive") {
+      toast.info("Discovering models... This may take a moment.");
+      const models = await $api<string[]>(
+        `/v1/admin/providers/${row.id}/discover-models?method=comprehensive`,
+        { method: "GET" }
+      );
+      toast.success(`Found ${models?.length || 0} models (comprehensive scan)`);
+      return;
+    }
+
+    // Fallback for old discover-models action
     if (action.key === "discover-models") {
       const models = await $api<string[]>(`/v1/admin/providers/${row.id}/discover-models`, {
         method: "GET",
@@ -97,15 +179,19 @@ const providerConfig = computed(
       const tpl = providerTemplateMap.value[tplId];
       if (!tpl || !setValues) return;
 
+      // Determine is_openai_compatible based on category
+      const isOpenAICompatible = tpl.category === "OPENAI_COMPATIBLE" || tpl.category === "CUSTOM";
+
       setValues({
         template_id: tpl.id,
         name: tpl.id,
         display_name: tpl.display_name,
         description: tpl.description ?? "",
-        website: tpl.website ?? "",
-        api_base_url: tpl.api_base_url,
-        interface_type: tpl.interface_type,
-        litellm_provider: tpl.litellm_provider ?? "",
+        website: tpl.docs_url ?? "",
+        api_base_url: tpl.default_base_url,
+        category: tpl.category,
+        is_openai_compatible: isOpenAICompatible,
+        litellm_provider: tpl.id,
       });
       lastAppliedTemplateId.value = tplId;
     },
@@ -117,10 +203,19 @@ const providerConfig = computed(
         variant: "default" as const,
       },
       {
-        key: "discover-models",
-        label: t("admin.pages.modelProviders.actions.discoverModels"),
+        key: "discover-models-quick",
+        label: "Discover Models (Quick)",
         icon: h(Search, { class: "h-4 w-4" }),
         variant: "secondary" as const,
+        visible: (row: any) =>
+          row.category === "OPENAI_COMPATIBLE" ||
+          (row.category === "CUSTOM" && row.is_openai_compatible),
+      },
+      {
+        key: "discover-models-comprehensive",
+        label: "Discover Models (Comprehensive)",
+        icon: h(Search, { class: "h-4 w-4" }),
+        variant: "outline" as const,
       },
     ],
 
@@ -147,6 +242,26 @@ const providerConfig = computed(
         },
       },
       {
+        accessorKey: "category",
+        header: "Category",
+        cell: (context) => {
+          const value = context.getValue() as string;
+          const variants: Record<string, any> = {
+            OPENAI_COMPATIBLE: "default",
+            PROVIDER_SPECIFIC: "secondary",
+            CUSTOM: "outline",
+            LOCAL: "ghost",
+          };
+          const labels: Record<string, string> = {
+            OPENAI_COMPATIBLE: "OpenAI-Compatible",
+            PROVIDER_SPECIFIC: "Provider-Specific",
+            CUSTOM: "Custom",
+            LOCAL: "Local",
+          };
+          return h(Badge, { variant: variants[value] || "outline" }, () => labels[value] || value);
+        },
+      },
+      {
         accessorKey: "api_base_url",
         header: t("admin.pages.modelProviders.fields.apiBaseUrl"),
         cell: (context) => {
@@ -156,7 +271,7 @@ const providerConfig = computed(
             h(
               "span",
               { class: "truncate max-w-[200px]", title: value },
-              value.length > 30 ? value.substring(0, 30) + "..." : value
+              value.length > 30 ? `${value.substring(0, 30)}...` : value
             ),
             h(
               "button",
@@ -210,6 +325,11 @@ const providerConfig = computed(
         type: "text",
       },
       {
+        name: "category",
+        label: "Category",
+        type: "text",
+      },
+      {
         name: "description",
         label: t("admin.pages.modelProviders.fields.description"),
         type: "textarea",
@@ -225,13 +345,13 @@ const providerConfig = computed(
         type: "text",
       },
       {
-        name: "interface_type",
-        label: t("admin.pages.modelProviders.fields.interfaceType"),
+        name: "litellm_provider",
+        label: t("admin.pages.modelProviders.fields.litellmProvider"),
         type: "text",
       },
       {
-        name: "litellm_provider",
-        label: t("admin.pages.modelProviders.fields.litellmProvider"),
+        name: "is_openai_compatible",
+        label: "OpenAI-Compatible",
         type: "text",
       },
       {
@@ -296,34 +416,40 @@ const providerConfig = computed(
         type: "password",
         required: false,
         placeholder: t("admin.pages.modelProviders.fields.apiKeyPlaceholder"),
-        help:
-          t("admin.pages.modelProviders.fields.apiKeyPlaceholder") +
-          " (not required for local HuggingFace embeddings)",
+        help: `${t(
+          "admin.pages.modelProviders.fields.apiKeyPlaceholder"
+        )} (not required for local HuggingFace embeddings)`,
         htmlName: "provider_api_key",
         autocomplete: "new-password",
       },
       {
-        name: "interface_type",
-        label: t("admin.pages.modelProviders.fields.interfaceType"),
+        name: "category",
+        label: "Provider Category",
         type: "select",
         required: true,
         options: [
-          { label: "Anthropic", value: "ANTHROPIC" },
-          { label: "DashScope", value: "DASHSCOPE" },
-          { label: "Google", value: "GOOGLE" },
-          { label: "OpenAI", value: "OPENAI" },
-          { label: "xAI", value: "XAI" },
-          { label: "HuggingFace (local embeddings)", value: "HUGGINGFACE" },
+          { label: "OpenAI-Compatible", value: "OPENAI_COMPATIBLE" },
+          { label: "Provider-Specific", value: "PROVIDER_SPECIFIC" },
+          { label: "Custom", value: "CUSTOM" },
+          { label: "Local", value: "LOCAL" },
         ],
-        defaultValue: "OPENAI",
+        defaultValue: "PROVIDER_SPECIFIC",
+        help: "Choose the provider type for proper integration",
+      },
+      {
+        name: "is_openai_compatible",
+        label: "OpenAI-Compatible",
+        type: "checkbox",
+        required: false,
+        help: "Check if your custom endpoint follows OpenAI API format (only for CUSTOM category)",
       },
       {
         name: "litellm_provider",
         label: t("admin.pages.modelProviders.fields.litellmProvider"),
         type: "text",
-        required: false,
-        placeholder: t("admin.pages.modelProviders.fields.litellmProviderPlaceholder"),
-        help: t("admin.pages.modelProviders.fields.litellmProviderHelp"),
+        required: true,
+        placeholder: "e.g., groq, anthropic, gemini, openai",
+        help: "LiteLLM provider identifier for routing",
       },
       {
         name: "status",

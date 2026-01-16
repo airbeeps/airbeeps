@@ -286,13 +286,16 @@ def create_chat_model(
     **additional_params,
 ) -> LiteLLMClientType:
     """
-    Unified factory method for creating LiteLLM chat clients.
+    Unified factory using LiteLLM's provider system.
+
+    All provider-specific logic is handled by LiteLLM internally.
+    We just need to construct the right model identifier.
 
     In test mode (AIRBEEPS_TEST_MODE=1), returns a FakeLiteLLMClient that
     produces deterministic responses without making any external API calls.
 
     Args:
-        provider: ModelProvider instance, containing interface_type, api_key, api_base_url
+        provider: ModelProvider instance with category, litellm_provider, api_key, api_base_url
         model_name: Model name
         temperature: Temperature parameter
         max_tokens: Max output tokens
@@ -316,44 +319,33 @@ def create_chat_model(
             **additional_params,
         )
 
-    # Map interface type to LiteLLM model prefix
-    interface_to_prefix = {
-        "OPENAI": "",  # OpenAI models don't need prefix (e.g., gpt-4)
-        "ANTHROPIC": "anthropic/",  # e.g., anthropic/claude-3-opus-20240229
-        "XAI": "xai/",  # e.g., xai/grok-beta
-        "GOOGLE": "gemini/",  # e.g., gemini/gemini-pro
-    }
+    # Build LiteLLM model identifier
+    # Format: provider/model-name (e.g., "groq/llama-3.3-70b", "gemini/gemini-1.5-pro")
+    full_model_name = f"{provider.litellm_provider}/{model_name}"
 
-    interface_type = provider.interface_type.upper()
-    logger.debug(f"Creating chat model for interface type: {interface_type}")
-
-    # Get prefix - raise error if unsupported
-    if interface_type not in interface_to_prefix:
-        raise ValueError(
-            f"Unsupported interface_type: {interface_type}. "
-            f"Supported types: {list(interface_to_prefix.keys())}"
-        )
-
-    prefix = interface_to_prefix[interface_type]
-
-    # Build full model name with prefix
-    full_model_name = f"{prefix}{model_name}" if prefix else model_name
-
-    logger.info(f"Creating LiteLLM client for model: {full_model_name}")
+    logger.info(f"Creating LiteLLM client for: {full_model_name}")
 
     # Prepare client parameters
     client_params = {
         "model": full_model_name,
         "api_key": provider.api_key,
-        "base_url": provider.api_base_url,
         "temperature": temperature,
         "max_tokens": max_tokens,
         **additional_params,
     }
 
-    # Add custom_llm_provider if specified (for OpenAI-compatible providers)
-    # This is needed for providers like Groq, Together AI, Mistral, etc.
-    if hasattr(provider, "litellm_provider") and provider.litellm_provider:
+    # Add base_url for custom endpoints
+    if provider.api_base_url:
+        client_params["base_url"] = provider.api_base_url
+
+    # For OpenAI-compatible providers, specify custom_llm_provider
+    # This helps LiteLLM route correctly
+    from airbeeps.ai_models.models import ProviderCategoryEnum
+
+    if provider.category == ProviderCategoryEnum.OPENAI_COMPATIBLE or (
+        provider.category == ProviderCategoryEnum.CUSTOM
+        and provider.is_openai_compatible
+    ):
         client_params["custom_llm_provider"] = provider.litellm_provider
         logger.info(f"Using custom LiteLLM provider: {provider.litellm_provider}")
 

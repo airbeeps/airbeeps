@@ -1,6 +1,5 @@
 import asyncio
 import uuid
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi_pagination import Page
@@ -9,11 +8,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from airbeeps.ai_models.catalog import (
-    get_provider_template,
-    list_model_templates,
-    list_provider_templates,
-)
 from airbeeps.ai_models.hf_assets import (
     ASSET_TYPE_HF_EMBEDDING,
     enqueue_hf_embedding_download,
@@ -25,6 +19,7 @@ from airbeeps.ai_models.models import (
     ModelAsset,
     ModelAssetStatusEnum,
     ModelProvider,
+    ProviderCategoryEnum,
 )
 from airbeeps.database import get_async_session
 
@@ -38,95 +33,153 @@ from .schemas import (
     ModelProviderUpdate,
     ModelResponse,
     ModelStatusEnum,
-    ModelTemplateResponse,
     ModelUpdate,
     ProviderStatusEnum,
-    ProviderTemplateDetailResponse,
-    ProviderTemplateResponse,
 )
 
 router = APIRouter()
 
 
 # ============================================================================
-# Catalog (templates)
+# LiteLLM Providers (Dynamic from LiteLLM SDK)
 # ============================================================================
 
 
 @router.get(
-    "/provider-templates",
-    response_model=list[ProviderTemplateResponse],
-    summary="List built-in provider templates",
+    "/litellm-providers",
+    summary="List all providers supported by LiteLLM",
 )
-async def list_provider_template_options():
-    return list_provider_templates()
+async def list_litellm_providers():
+    """
+    Get list of all providers supported by LiteLLM SDK.
+    This is dynamically fetched from LiteLLM's provider_list.
+    """
+    from airbeeps.ai_models.litellm_providers import get_all_providers_info
+
+    return get_all_providers_info()
 
 
 @router.get(
-    "/provider-templates/{template_id}",
-    response_model=ProviderTemplateDetailResponse,
-    summary="Get provider template detail (includes recommended models)",
+    "/litellm-providers/by-category",
+    summary="List LiteLLM providers grouped by category",
 )
-async def get_provider_template_detail(template_id: str):
-    tpl = get_provider_template(template_id)
-    if not tpl:
-        raise HTTPException(status_code=404, detail="Provider template not found")
-    # Normalize into response shape
-    base = {
-        "id": tpl.get("id"),
-        "display_name": tpl.get("display_name"),
-        "description": tpl.get("description"),
-        "website": tpl.get("website"),
-        "api_base_url": tpl.get("api_base_url"),
-        "interface_type": tpl.get("interface_type"),
-        "litellm_provider": tpl.get("litellm_provider"),
-        "models": tpl.get("models", []) or [],
-    }
-    return base
+async def list_litellm_providers_by_category():
+    """
+    Get providers grouped by category (OpenAI-compatible, Native, Custom, Local).
+    """
+    from airbeeps.ai_models.litellm_providers import get_providers_by_category
 
-
-def _guess_provider_template_id(provider: ModelProvider) -> str | None:
-    if getattr(provider, "template_id", None):
-        return provider.template_id
-    # Legacy/local providers: map by interface type when appropriate
-    if provider.interface_type == "HUGGINGFACE":
-        return "huggingface_local"
-    name = (provider.name or "").strip().lower()
-    if name:
-        # Common fallback: match provider.name to template id
-        return name
-    return None
+    return get_providers_by_category()
 
 
 @router.get(
-    "/providers/{provider_id}/model-suggestions",
-    response_model=list[ModelTemplateResponse],
-    summary="List model template suggestions for a provider instance",
+    "/litellm-providers/{provider_id}",
+    summary="Get info for a specific LiteLLM provider",
 )
-async def list_model_suggestions(
+async def get_litellm_provider_info(provider_id: str):
+    """Get metadata for a specific LiteLLM provider."""
+    from airbeeps.ai_models.litellm_providers import get_provider_info
+
+    return get_provider_info(provider_id)
+
+
+# ============================================================================
+# Model discovery and available models
+# ============================================================================
+
+
+@router.get(
+    "/providers/{provider_id}/available-models",
+    summary="List available models from provider (live fetch with caching)",
+)
+async def list_available_models(
     provider_id: uuid.UUID,
-    capability: str | None = Query(None, description="Filter by capability"),
+    force_refresh: bool = Query(False, description="Force refresh cache"),
     session: AsyncSession = Depends(get_async_session),
 ):
-    result = await session.execute(
-        select(ModelProvider).where(ModelProvider.id == provider_id)
-    )
-    provider = result.scalar_one_or_none()
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+    """
+    Fetch available models from the provider.
 
-    template_id = _guess_provider_template_id(provider)
-    if not template_id:
-        return []
+    This endpoint:
+    1. Attempts to fetch models directly from the provider (quick method)
+    2. Falls back to comprehensive discovery if quick fails
+    3. Caches results in memory for 5 minutes
+    4. Returns empty list if provider doesn't support discovery
 
-    models = list_model_templates(template_id) or []
-    if capability:
-        models = [m for m in models if capability in (m.get("capabilities") or [])]
-    # Ensure provider_template_id is set for downstream UI grouping
-    out: list[dict[str, Any]] = []
-    for m in models:
-        out.append({**m, "provider_template_id": template_id})
-    return out
+    Args:
+        provider_id: Provider UUID
+        force_refresh: If True, bypass cache and fetch fresh data
+    """
+    import logging
+    from datetime import datetime, timedelta
+
+    logger = logging.getLogger(__name__)
+
+    # Simple in-memory cache (5 minute TTL)
+    cache_key = f"models_{provider_id}"
+    cache_ttl = timedelta(minutes=5)
+
+    # Check cache first (unless force_refresh)
+    if not force_refresh and hasattr(list_available_models, "_cache"):
+        cached = list_available_models._cache.get(cache_key)
+        if cached and datetime.now() - cached["timestamp"] < cache_ttl:
+            logger.info(f"Returning cached models for provider {provider_id}")
+            return cached["data"]
+
+    # Fetch provider
+    provider = await _get_provider_or_404(session, provider_id)
+
+    # Try to discover models
+    try:
+        # First try quick discovery (OpenAI-compatible)
+        if provider.category == ProviderCategoryEnum.OPENAI_COMPATIBLE or (
+            provider.category == ProviderCategoryEnum.CUSTOM
+            and provider.is_openai_compatible
+        ):
+            try:
+                models = await _discover_models_quick(provider)
+                logger.info(
+                    f"Quick discovery found {len(models)} models for provider {provider_id}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Quick discovery failed for provider {provider_id}: {e}, trying comprehensive"
+                )
+                models = await _discover_models_comprehensive(provider)
+        else:
+            # Use comprehensive for provider-specific
+            models = await _discover_models_comprehensive(provider)
+            logger.info(
+                f"Comprehensive discovery found {len(models)} models for provider {provider_id}"
+            )
+
+        # Format response
+        result = {
+            "provider_id": str(provider_id),
+            "provider_name": provider.display_name,
+            "models": [{"id": m, "name": m} for m in models],
+            "cached_at": datetime.now().isoformat(),
+        }
+
+        # Cache the result
+        if not hasattr(list_available_models, "_cache"):
+            list_available_models._cache = {}
+        list_available_models._cache[cache_key] = {
+            "data": result,
+            "timestamp": datetime.now(),
+        }
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Model discovery failed for provider {provider_id}: {e}")
+        # Return empty list instead of failing
+        return {
+            "provider_id": str(provider_id),
+            "provider_name": provider.display_name,
+            "models": [],
+            "error": str(e),
+        }
 
 
 # ============================================================================
@@ -141,35 +194,27 @@ def _is_test_mode() -> bool:
     return settings.TEST_MODE
 
 
-@router.post(
-    "/providers/{provider_id}/test-connection",
-    summary="Test provider connectivity/auth (best-effort)",
-)
-async def test_provider_connection(
-    provider_id: uuid.UUID,
-    session: AsyncSession = Depends(get_async_session),
-):
-    # Short-circuit in test mode: return mock success without any external calls
-    if _is_test_mode():
-        return {"ok": True, "message": "TEST_MODE: Connection test skipped"}
-
-    import httpx
-
+async def _get_provider_or_404(
+    session: AsyncSession, provider_id: uuid.UUID
+) -> ModelProvider:
+    """Helper to get provider or raise 404."""
     result = await session.execute(
         select(ModelProvider).where(ModelProvider.id == provider_id)
     )
     provider = result.scalar_one_or_none()
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
+    return provider
 
-    # Local HF embeddings: nothing to call
-    if provider.interface_type == "HUGGINGFACE":
-        return {"ok": True, "message": "Local HuggingFace embeddings provider"}
 
-    if not provider.api_base_url:
-        raise HTTPException(status_code=400, detail="API base URL is required")
+async def _test_openai_compatible_connection(provider: ModelProvider) -> dict:
+    """Test OpenAI-compatible endpoint via direct HTTP."""
+    import logging
 
-    # Best-effort: OpenAI-compatible /models endpoint
+    import httpx
+
+    logger = logging.getLogger(__name__)
+
     url = provider.api_base_url.rstrip("/") + "/models"
     headers = {}
     if provider.api_key:
@@ -178,106 +223,243 @@ async def test_provider_connection(
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, headers=headers)
-        if resp.status_code >= 400:
-            # Provide user-friendly error messages based on status code
-            error_msg = ""
-            if resp.status_code == 401:
-                error_msg = "Unauthorized. Please check your API key."
-            elif resp.status_code == 403:
-                error_msg = "Forbidden. API key may lack required permissions."
-            elif resp.status_code == 404:
-                error_msg = "API endpoint not found. Please verify the base URL."
-            elif resp.status_code == 429:
-                error_msg = "Rate limit exceeded. Please try again later."
-            elif resp.status_code >= 500:
-                error_msg = f"Provider server error ({resp.status_code}). Please try again later."
-            else:
-                error_msg = f"Connection failed with status {resp.status_code}."
 
+        if resp.status_code == 200:
+            # Count available models
+            try:
+                data = resp.json().get("data", [])
+                model_count = len(data) if isinstance(data, list) else 0
+                return {
+                    "ok": True,
+                    "status_code": 200,
+                    "message": f"Connected successfully ({model_count} models available)",
+                }
+            except Exception:
+                return {
+                    "ok": True,
+                    "status_code": 200,
+                    "message": "Connected successfully",
+                }
+        elif resp.status_code == 401:
+            return {"ok": False, "message": "Unauthorized. Check your API key."}
+        elif resp.status_code == 403:
+            return {"ok": False, "message": "Forbidden. API key may lack permissions."}
+        elif resp.status_code == 404:
+            return {"ok": False, "message": "Endpoint not found. Verify the base URL."}
+        else:
             return {
                 "ok": False,
-                "status_code": resp.status_code,
-                "message": error_msg,
-                "detail": resp.text[:500],
+                "message": f"Status {resp.status_code}",
+                "detail": resp.text[:200],
             }
-        return {"ok": True, "status_code": resp.status_code}
+    except httpx.TimeoutException:
+        return {"ok": False, "message": "Connection timeout. Check the base URL."}
     except Exception as e:
-        return {"ok": False, "message": f"Connection error: {str(e)}"}
+        logger.error(f"Connection test error: {e}")
+        return {"ok": False, "message": f"Connection error: {e!s}"}
 
 
-@router.get(
-    "/providers/{provider_id}/discover-models",
-    summary="Discover available models from provider (OpenAI-compatible only)",
+async def _test_litellm_provider_connection(provider: ModelProvider) -> dict:
+    """Test provider-specific connection using LiteLLM validation."""
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        from litellm import validate_environment
+
+        # Build a test model name for validation
+        test_model = f"{provider.litellm_provider}/test-model"
+
+        # Validate environment setup
+        env_result = await asyncio.to_thread(
+            validate_environment,
+            model=test_model,
+            api_key=provider.api_key,
+            api_base=provider.api_base_url,
+        )
+
+        if not env_result.get("keys_in_environment"):
+            missing = env_result.get("missing_keys", [])
+            return {
+                "ok": False,
+                "message": f"Missing configuration: {', '.join(missing)}",
+            }
+
+        # Environment is valid
+        return {
+            "ok": True,
+            "message": "Configuration validated (actual model calls will work)",
+        }
+    except ImportError:
+        logger.warning("LiteLLM not available for validation")
+        return {
+            "ok": True,
+            "message": "Basic validation passed (LiteLLM validation unavailable)",
+        }
+    except Exception as e:
+        logger.error(f"LiteLLM validation error: {e}")
+        return {"ok": False, "message": f"Validation error: {e!s}"}
+
+
+@router.post(
+    "/providers/{provider_id}/test-connection",
+    summary="Test provider connectivity/auth (best-effort)",
 )
-async def discover_models_from_provider(
+async def test_provider_connection(
     provider_id: uuid.UUID,
     session: AsyncSession = Depends(get_async_session),
 ):
-    # Short-circuit in test mode: return mock model list without any external calls
+    """Test provider connection using category-aware strategies."""
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # Short-circuit in test mode
     if _is_test_mode():
-        return ["test-model-1", "test-model-2", "test-model-gpt-4"]
+        return {"ok": True, "message": "TEST_MODE: Connection test skipped"}
 
+    provider = await _get_provider_or_404(session, provider_id)
+
+    # Local providers don't need connectivity checks
+    if provider.category == ProviderCategoryEnum.LOCAL:
+        return {"ok": True, "message": "Local provider"}
+
+    try:
+        # Strategy 1: For OpenAI-compatible, try direct HTTP first (fast)
+        if provider.category == ProviderCategoryEnum.OPENAI_COMPATIBLE or (
+            provider.category == ProviderCategoryEnum.CUSTOM
+            and provider.is_openai_compatible
+        ):
+            return await _test_openai_compatible_connection(provider)
+
+        # Strategy 2: For provider-specific, use LiteLLM validation
+        return await _test_litellm_provider_connection(provider)
+
+    except Exception as e:
+        logger.error(f"Connection test failed for provider {provider_id}: {e}")
+        return {"ok": False, "message": f"Connection error: {e!s}"}
+
+
+async def _discover_models_quick(provider: ModelProvider) -> list[str]:
+    """Quick discovery via direct HTTP /models endpoint."""
     import httpx
-
-    result = await session.execute(
-        select(ModelProvider).where(ModelProvider.id == provider_id)
-    )
-    provider = result.scalar_one_or_none()
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-
-    if not provider.api_base_url:
-        raise HTTPException(status_code=400, detail="API base URL is required")
-
-    if provider.interface_type not in ("OPENAI", "XAI"):
-        raise HTTPException(
-            status_code=400,
-            detail="Model discovery is currently supported for OpenAI-compatible providers only",
-        )
 
     url = provider.api_base_url.rstrip("/") + "/models"
     headers = {}
     if provider.api_key:
         headers["Authorization"] = f"Bearer {provider.api_key}"
 
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(url, headers=headers)
+
+    if resp.status_code != 200:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"Provider returned status {resp.status_code}",
+        )
+
+    data = resp.json().get("data", [])
+    if not isinstance(data, list):
+        return []
+
+    models = [m["id"] for m in data if isinstance(m, dict) and m.get("id")]
+    return sorted(set(models))
+
+
+async def _discover_models_comprehensive(provider: ModelProvider) -> list[str]:
+    """Comprehensive discovery using LiteLLM's get_valid_models."""
+    import logging
+    import os
+
+    logger = logging.getLogger(__name__)
+
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(url, headers=headers)
+        from litellm import get_valid_models
+    except ImportError:
+        logger.warning("LiteLLM not available for model discovery")
+        raise HTTPException(
+            status_code=501,
+            detail="Comprehensive discovery requires LiteLLM (not installed)",
+        )
 
-        if resp.status_code >= 400:
-            # Provide user-friendly error messages based on status code
-            error_msg = ""
-            if resp.status_code == 401:
-                error_msg = "Unauthorized. Please check your API key."
-            elif resp.status_code == 403:
-                error_msg = "Forbidden. API key may lack required permissions."
-            elif resp.status_code == 404:
-                error_msg = "API endpoint not found. Please verify the base URL."
-            elif resp.status_code == 429:
-                error_msg = "Rate limit exceeded. Please try again later."
-            elif resp.status_code >= 500:
-                error_msg = f"Provider server error ({resp.status_code}). Please try again later."
-            else:
-                error_msg = f"Request failed with status {resp.status_code}."
-            raise HTTPException(status_code=resp.status_code, detail=error_msg)
+    # Set up environment for this provider
+    cleanup_vars = []
 
-        payload = resp.json()
-        data = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(data, list):
-            return []
-        # Return sorted ids
-        ids = []
-        for item in data:
-            if isinstance(item, dict) and item.get("id"):
-                ids.append(str(item["id"]))
-        return sorted(set(ids))
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=500, detail=f"Connection error: {str(e)}")
+    try:
+        # Set provider-specific environment variables
+        if provider.api_key:
+            key_var = f"{provider.litellm_provider.upper()}_API_KEY"
+            os.environ[key_var] = provider.api_key
+            cleanup_vars.append(key_var)
+
+        if provider.api_base_url:
+            base_var = f"{provider.litellm_provider.upper()}_API_BASE"
+            os.environ[base_var] = provider.api_base_url
+            cleanup_vars.append(base_var)
+
+        # Call LiteLLM's get_valid_models
+        models = await asyncio.to_thread(
+            get_valid_models,
+            custom_llm_provider=provider.litellm_provider,
+            check_provider_endpoint=True,
+        )
+
+        return sorted(models) if models else []
+
+    finally:
+        # Clean up environment variables
+        for var in cleanup_vars:
+            if var in os.environ:
+                del os.environ[var]
+
+
+@router.get(
+    "/providers/{provider_id}/discover-models",
+    summary="Discover available models from provider",
+)
+async def discover_models_from_provider(
+    provider_id: uuid.UUID,
+    method: str = Query(
+        "auto", description="Discovery method: 'auto', 'quick', 'comprehensive'"
+    ),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """
+    Discover available models from provider.
+
+    Methods:
+    - auto: Choose best method based on provider category
+    - quick: Direct HTTP /models (OpenAI-compatible only)
+    - comprehensive: LiteLLM get_valid_models (works for all, slower)
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # Short-circuit in test mode
+    if _is_test_mode():
+        return ["test-model-1", "test-model-2", "test-gpt-4"]
+
+    provider = await _get_provider_or_404(session, provider_id)
+
+    # Determine discovery method
+    if method == "auto":
+        if provider.category == ProviderCategoryEnum.OPENAI_COMPATIBLE or (
+            provider.category == ProviderCategoryEnum.CUSTOM
+            and provider.is_openai_compatible
+        ):
+            method = "quick"
+        else:
+            method = "comprehensive"
+
+    try:
+        if method == "quick":
+            return await _discover_models_quick(provider)
+        return await _discover_models_comprehensive(provider)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        logger.error(f"Model discovery failed for provider {provider_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Discovery failed: {e!s}")
 
 
 # list all providers (non-paginated)

@@ -88,7 +88,9 @@ async def create_provider(
     cookies: dict[str, str],
     name: str = "test-provider",
     display_name: str = "Test Provider",
-    interface_type: str = "OPENAI",
+    category: str = "PROVIDER_SPECIFIC",
+    is_openai_compatible: bool = False,
+    litellm_provider: str = "openai",
     api_base_url: str = "https://api.test.com/v1",
     api_key: str = "test-api-key",
 ) -> Response:
@@ -100,7 +102,9 @@ async def create_provider(
         cookies: Auth cookies from login
         name: Provider name (unique identifier)
         display_name: Display name for the provider
-        interface_type: Provider interface type (OPENAI, ANTHROPIC, etc.)
+        category: Provider category (OPENAI_COMPATIBLE, PROVIDER_SPECIFIC, CUSTOM, LOCAL)
+        is_openai_compatible: Whether custom endpoint is OpenAI-compatible
+        litellm_provider: LiteLLM provider identifier
         api_base_url: API base URL
         api_key: API key for the provider
 
@@ -110,7 +114,9 @@ async def create_provider(
     payload = {
         "name": name,
         "display_name": display_name,
-        "interface_type": interface_type,
+        "category": category,
+        "is_openai_compatible": is_openai_compatible,
+        "litellm_provider": litellm_provider,
         "api_base_url": api_base_url,
         "api_key": api_key,
         "status": "ACTIVE",

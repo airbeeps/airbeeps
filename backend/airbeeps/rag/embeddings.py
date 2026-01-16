@@ -9,11 +9,11 @@ from sqlalchemy.orm import selectinload
 
 from airbeeps.ai_models.hf_assets import ASSET_TYPE_HF_EMBEDDING
 from airbeeps.ai_models.models import (
-    PROVIDER_INTERFACE_TYPES,
     Model,
     ModelAsset,
     ModelAssetStatusEnum,
     ModelProvider,
+    ProviderCategoryEnum,
 )
 from airbeeps.database import async_session_maker
 
@@ -174,7 +174,7 @@ class EmbeddingService:
             return self._embedder_cache[cache_key]
 
         hf_local_path: str | None = None
-        if provider.interface_type == PROVIDER_INTERFACE_TYPES["HUGGINGFACE"]:
+        if provider.category == ProviderCategoryEnum.LOCAL:
             hf_local_path = await self._get_hf_local_path(model.name)
 
         embedder = await asyncio.to_thread(
@@ -211,9 +211,12 @@ class EmbeddingService:
         hf_local_path: str | None = None,
     ) -> Embeddings:
         """Construct concrete embedder instance"""
-        interface_type = provider.interface_type
+        category = provider.category
 
-        if interface_type == PROVIDER_INTERFACE_TYPES["OPENAI"]:
+        # OpenAI-compatible providers (including custom endpoints)
+        if category == ProviderCategoryEnum.OPENAI_COMPATIBLE or (
+            category == ProviderCategoryEnum.CUSTOM and provider.is_openai_compatible
+        ):
             from langchain_openai import OpenAIEmbeddings
 
             kwargs = {"model": model.name}
@@ -223,14 +226,25 @@ class EmbeddingService:
                 kwargs["openai_api_base"] = provider.api_base_url
 
             return OpenAIEmbeddings(**kwargs)
-        if interface_type == PROVIDER_INTERFACE_TYPES["DASHSCOPE"]:
-            from langchain_community.embeddings import DashScopeEmbeddings
 
-            kwargs = {"model": model.name}
-            if provider.api_key:
-                kwargs["dashscope_api_key"] = provider.api_key
-            return DashScopeEmbeddings(**kwargs)
-        if interface_type == PROVIDER_INTERFACE_TYPES["HUGGINGFACE"]:
+        # Provider-specific implementations
+        if category == ProviderCategoryEnum.PROVIDER_SPECIFIC:
+            # DashScope (Alibaba)
+            if provider.litellm_provider == "dashscope":
+                from langchain_community.embeddings import DashScopeEmbeddings
+
+                kwargs = {"model": model.name}
+                if provider.api_key:
+                    kwargs["dashscope_api_key"] = provider.api_key
+                return DashScopeEmbeddings(**kwargs)
+
+            # Add other provider-specific implementations here as needed
+            raise NotImplementedError(
+                f"Provider-specific embeddings not yet implemented for: {provider.litellm_provider}"
+            )
+
+        # Local models (HuggingFace)
+        if category == ProviderCategoryEnum.LOCAL:
             from langchain_huggingface import HuggingFaceEmbeddings
 
             # Default to CPU; sentence-transformers must be installed
@@ -240,6 +254,7 @@ class EmbeddingService:
                 model_kwargs={"device": "cpu"},
                 encode_kwargs={"normalize_embeddings": True},
             )
+
         raise NotImplementedError(
-            f"Unsupported provider interface for embeddings: {interface_type}"
+            f"Unsupported provider category for embeddings: {category}"
         )

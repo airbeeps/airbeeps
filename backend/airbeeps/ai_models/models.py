@@ -28,16 +28,13 @@ class ProviderStatusEnum(enum.Enum):
     MAINTENANCE = "MAINTENANCE"  # Under maintenance
 
 
-# Interface type constants - Use string constants instead of enum
-PROVIDER_INTERFACE_TYPES = {
-    "OPENAI": "OPENAI",  # OpenAI compatible interface
-    "ANTHROPIC": "ANTHROPIC",  # Anthropic interface
-    "XAI": "XAI",  # xAI interface
-    "GOOGLE": "GOOGLE",  # Google interface
-    "DASHSCOPE": "DASHSCOPE",  # Alibaba DashScope interface
-    "HUGGINGFACE": "HUGGINGFACE",  # Local / HF embeddings (e.g., BGE)
-    "CUSTOM": "CUSTOM",  # Custom interface (requires specific adapter)
-}
+class ProviderCategoryEnum(enum.Enum):
+    """Provider category enumeration"""
+
+    OPENAI_COMPATIBLE = "OPENAI_COMPATIBLE"  # OpenAI-compatible endpoints
+    PROVIDER_SPECIFIC = "PROVIDER_SPECIFIC"  # Native provider APIs via LiteLLM
+    CUSTOM = "CUSTOM"  # User-configured custom endpoints
+    LOCAL = "LOCAL"  # Local models (HuggingFace)
 
 
 class ModelStatusEnum(enum.Enum):
@@ -79,15 +76,25 @@ class ModelProvider(Base):
     # API Key
     api_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
-    # Interface type - determines which adapter to use
-    interface_type: Mapped[str] = mapped_column(
-        String(50), default=PROVIDER_INTERFACE_TYPES["CUSTOM"], nullable=False
+    # Provider category - determines routing logic
+    category: Mapped[ProviderCategoryEnum] = mapped_column(
+        SQLEnum(ProviderCategoryEnum),
+        nullable=False,
+        default=ProviderCategoryEnum.PROVIDER_SPECIFIC,
+        comment="Provider category for routing logic",
     )
 
-    # LiteLLM provider name (optional) - for OpenAI-compatible providers that need custom_llm_provider
-    # Examples: "groq", "together_ai", "mistral", "deepseek", etc.
-    litellm_provider: Mapped[str | None] = mapped_column(
-        String(100), nullable=True, comment="LiteLLM custom provider name"
+    # For CUSTOM category: indicates if endpoint is OpenAI-compatible
+    is_openai_compatible: Mapped[bool] = mapped_column(
+        nullable=False,
+        default=False,
+        comment="Whether custom endpoint follows OpenAI API format",
+    )
+
+    # LiteLLM provider name - required for proper routing
+    # Examples: "groq", "anthropic", "gemini", "openai", etc.
+    litellm_provider: Mapped[str] = mapped_column(
+        String(100), nullable=False, comment="LiteLLM provider identifier"
     )
 
     # Provider status

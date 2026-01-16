@@ -32,6 +32,7 @@ from .ai_models.models import (
     Model,
     ModelProvider,
     ModelStatusEnum,
+    ProviderCategoryEnum,
     ProviderStatusEnum,
 )
 from .assistants.models import Assistant, AssistantStatusEnum
@@ -140,12 +141,20 @@ async def ensure_providers(providers: list[dict[str, Any]]) -> dict[str, ModelPr
             status_value = str(entry.get("status", "ACTIVE")).upper()
             status = ProviderStatusEnum[status_value]
 
+            # Get category (default to PROVIDER_SPECIFIC if not specified)
+            category_value = str(entry.get("category", "PROVIDER_SPECIFIC")).upper()
+            category = ProviderCategoryEnum[category_value]
+
             if provider:
                 # Update selected fields (idempotent)
                 provider.display_name = entry.get("display_name", provider.display_name)
                 provider.description = entry.get("description", provider.description)
-                provider.interface_type = entry.get(
-                    "interface_type", provider.interface_type
+                provider.category = entry.get("category", provider.category)
+                provider.is_openai_compatible = entry.get(
+                    "is_openai_compatible", provider.is_openai_compatible
+                )
+                provider.litellm_provider = entry.get(
+                    "litellm_provider", provider.litellm_provider
                 )
                 provider.api_base_url = entry.get("api_base_url", provider.api_base_url)
                 if entry.get("api_key"):
@@ -157,7 +166,9 @@ async def ensure_providers(providers: list[dict[str, Any]]) -> dict[str, ModelPr
                     name=name,
                     display_name=entry.get("display_name", name),
                     description=entry.get("description"),
-                    interface_type=entry.get("interface_type", "CUSTOM"),
+                    category=category,
+                    is_openai_compatible=entry.get("is_openai_compatible", False),
+                    litellm_provider=entry.get("litellm_provider", name),
                     api_base_url=entry.get("api_base_url", ""),
                     api_key=entry.get("api_key"),
                     status=status,

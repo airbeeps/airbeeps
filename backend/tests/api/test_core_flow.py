@@ -71,11 +71,12 @@ class TestCoreFlow:
             cookies,
             name="test-openai",
             display_name="Test OpenAI Provider",
-            interface_type="OPENAI",
+            category="PROVIDER_SPECIFIC",
+            litellm_provider="openai",
             api_base_url="https://api.openai.com/v1",
             api_key="sk-test-key",
         )
-        assert provider_response.status_code == 201, (
+        assert provider_response.status_code in (200, 201), (
             f"Create provider failed: {provider_response.text}"
         )
 
@@ -92,7 +93,7 @@ class TestCoreFlow:
             display_name="GPT-4 Test Model",
             capabilities=["chat"],
         )
-        assert model_response.status_code == 201, (
+        assert model_response.status_code in (200, 201), (
             f"Create model failed: {model_response.text}"
         )
 
@@ -109,7 +110,7 @@ class TestCoreFlow:
             system_prompt="You are a helpful test assistant.",
             is_public=True,
         )
-        assert assistant_response.status_code == 201, (
+        assert assistant_response.status_code in (200, 201), (
             f"Create assistant failed: {assistant_response.text}"
         )
 

@@ -186,7 +186,8 @@ interface Provider {
   website: string;
   api_base_url: string;
   api_key?: string;
-  interface_type: string;
+  category: "OPENAI_COMPATIBLE" | "PROVIDER_SPECIFIC" | "CUSTOM" | "LOCAL";
+  is_openai_compatible: boolean;
   litellm_provider?: string;
   status: "ACTIVE" | "INACTIVE" | "MAINTENANCE";
   created_at: string;

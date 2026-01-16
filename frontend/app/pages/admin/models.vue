@@ -78,25 +78,32 @@ const hfInstalledRepoIds = computed(
 
 const modelTemplatesByProviderId = ref<Record<string, ModelTemplate[]>>({});
 const templatesLoadingByProviderId = ref<Record<string, boolean>>({});
-const discoveredModelsByProviderId = ref<Record<string, string[]>>({});
-const discoveringModelsByProviderId = ref<Record<string, boolean>>({});
 
-const ensureModelTemplatesLoaded = async (providerId: string) => {
+const ensureModelTemplatesLoaded = async (providerId: string, forceRefresh = false) => {
   if (!providerId) return;
-  if (modelTemplatesByProviderId.value[providerId]) return;
+  if (modelTemplatesByProviderId.value[providerId] && !forceRefresh) return;
   if (templatesLoadingByProviderId.value[providerId]) return;
   templatesLoadingByProviderId.value = {
     ...templatesLoadingByProviderId.value,
     [providerId]: true,
   };
   try {
-    const templates = await $api<ModelTemplate[]>(
-      `/v1/admin/providers/${providerId}/model-suggestions`,
+    // Use the new available-models endpoint with live fetching and caching
+    const queryParams = forceRefresh ? "?force_refresh=true" : "";
+    const response = await $api<{ models: Array<{ id: string; name: string }> }>(
+      `/v1/admin/providers/${providerId}/available-models${queryParams}`,
       { method: "GET" }
     );
+
+    // Convert the response format to ModelTemplate format
+    const templates: ModelTemplate[] = (response?.models ?? []).map((m) => ({
+      name: m.id,
+      display_name: m.name,
+    }));
+
     modelTemplatesByProviderId.value = {
       ...modelTemplatesByProviderId.value,
-      [providerId]: templates ?? [],
+      [providerId]: templates,
     };
   } catch (e) {
     modelTemplatesByProviderId.value = {
@@ -111,44 +118,9 @@ const ensureModelTemplatesLoaded = async (providerId: string) => {
   }
 };
 
-const discoverModelsForProvider = async (providerId: string) => {
-  if (!providerId) return;
-  if (discoveringModelsByProviderId.value[providerId]) return;
-
-  discoveringModelsByProviderId.value = {
-    ...discoveringModelsByProviderId.value,
-    [providerId]: true,
-  };
-
-  try {
-    const models = await $api<string[]>(`/v1/admin/providers/${providerId}/discover-models`, {
-      method: "GET",
-    });
-    discoveredModelsByProviderId.value = {
-      ...discoveredModelsByProviderId.value,
-      [providerId]: models ?? [],
-    };
-    toast.success(
-      t("admin.pages.models.discoverModelsSuccess", {
-        count: (models ?? []).length,
-      })
-    );
-  } catch (e: any) {
-    toast.error(e?.data?.detail || e?.message || t("common.error"));
-    discoveredModelsByProviderId.value = {
-      ...discoveredModelsByProviderId.value,
-      [providerId]: [],
-    };
-  } finally {
-    discoveringModelsByProviderId.value = {
-      ...discoveringModelsByProviderId.value,
-      [providerId]: false,
-    };
-  }
-};
-
 const lastProviderId = ref<string | null>(null);
 const lastAppliedTemplateKey = ref<string | null>(null);
+const isInitialLoad = ref<boolean>(true);
 
 // HF download prompt state (only used when provider is HF local embeddings)
 const hfDownloadPromptOpen = ref(false);
@@ -245,30 +217,16 @@ const providerConfig = computed(
     description: t("admin.pages.models.description"),
     apiEndpoint: "/v1/admin/models",
     onFormChange: ({ formData, mode, setValues }) => {
-      if (mode !== "create") return;
       const providerId = (formData?.provider_id as string) || "";
       const provider = providerId ? providerMap.value[providerId] : undefined;
 
-      // Load suggestions when provider changes
+      // Load suggestions when provider changes (for both create and edit modes)
       if (providerId && providerId !== lastProviderId.value) {
         lastProviderId.value = providerId;
         lastAppliedTemplateKey.value = null;
         lastHfPromptedRepoId.value = null;
+        isInitialLoad.value = true;
         ensureModelTemplatesLoaded(providerId);
-
-        // Auto-discover models for OpenAI-compatible providers if not already discovered
-        if (
-          provider &&
-          (provider.interface_type === "OPENAI" || provider.interface_type === "XAI")
-        ) {
-          if (
-            !discoveredModelsByProviderId.value[providerId] &&
-            !discoveringModelsByProviderId.value[providerId]
-          ) {
-            // Auto-discover in background
-            void discoverModelsForProvider(providerId);
-          }
-        }
       }
 
       const templateName = (formData?.template_id as string) || "";
@@ -282,20 +240,30 @@ const providerConfig = computed(
       if (!providerId || !templateName || !setValues) return;
 
       const templateKey = `${providerId}:${templateName}`;
+
+      // Skip if this is the same template we already applied
       if (templateKey === lastAppliedTemplateKey.value) return;
+
+      // In edit mode, skip initial load (when form opens with existing data)
+      // but allow subsequent template selections to update fields
+      if (mode === "edit" && isInitialLoad.value) {
+        isInitialLoad.value = false;
+        lastAppliedTemplateKey.value = templateKey;
+        return;
+      }
 
       const templates = modelTemplatesByProviderId.value[providerId] ?? [];
       const tpl = templates.find((m) => m.name === templateName);
 
       if (tpl) {
         // For HF providers: if selected model isn't installed, offer a download prompt
-        if (provider?.interface_type === "HUGGINGFACE") {
+        if (provider?.category === "LOCAL") {
           maybePromptHfDownload(templateName);
         }
 
         setValues({
           name: tpl.name,
-          display_name: tpl.display_name,
+          display_name: tpl.display_name || tpl.name,
           description: tpl.description ?? "",
           capabilities: tpl.capabilities ?? [],
           generation_config: JSON.stringify(tpl.generation_config ?? {}, null, 2),
@@ -303,18 +271,17 @@ const providerConfig = computed(
           max_output_tokens: tpl.max_output_tokens ?? 0,
         });
         lastAppliedTemplateKey.value = templateKey;
-      } else {
-        // Check if it's a discovered model (no full template data)
-        const discoveredModels = discoveredModelsByProviderId.value[providerId] ?? [];
-        if (discoveredModels.includes(templateName)) {
-          // For discovered models, only prefill the name
-          setValues({
-            name: templateName,
-            display_name: templateName,
-          });
-          lastAppliedTemplateKey.value = templateKey;
-        }
+      } else if (templateName) {
+        // If template name is provided but not found, just prefill the name
+        setValues({
+          name: templateName,
+          display_name: templateName,
+        });
+        lastAppliedTemplateKey.value = templateKey;
       }
+
+      // Mark as no longer initial load after first template processing
+      isInitialLoad.value = false;
     },
 
     columns: [
@@ -501,9 +468,6 @@ const providerConfig = computed(
           const providerId = (formData?.provider_id as string) || "";
           const provider = providerId ? providerMap.value[providerId] : undefined;
           const templates = providerId ? (modelTemplatesByProviderId.value[providerId] ?? []) : [];
-          const discoveredModels = providerId
-            ? (discoveredModelsByProviderId.value[providerId] ?? [])
-            : [];
 
           // Build options list
           const opts: { label: string; value: string; group?: string }[] = [];
@@ -514,8 +478,8 @@ const providerConfig = computed(
             value: "",
           });
 
-          // For HuggingFace: Add installed models (catalog doesn't apply here)
-          if (provider?.interface_type === "HUGGINGFACE") {
+          // For HuggingFace: Add installed models
+          if (provider?.category === "LOCAL") {
             const installedIds = hfInstalledRepoIds.value;
             const installedOnly = [...installedIds].filter(
               (id) => !templates.some((t) => t.name === id)
@@ -524,32 +488,26 @@ const providerConfig = computed(
               opts.push({
                 label: `${t("admin.pages.models.hf.installedPrefix")}: ${id}`,
                 value: id,
-                group: "installed",
+                group: "Installed Models",
               });
             });
           }
 
-          // For providers with discovered models: show ONLY discovered models (skip catalog)
-          // This ensures users see the latest models from the provider API
-          if (discoveredModels.length > 0 && provider?.interface_type !== "HUGGINGFACE") {
-            discoveredModels.forEach((modelName) => {
-              opts.push({
-                label: `${modelName}`,
-                value: modelName,
-                group: "discovered",
-              });
-            });
-          } else if (templates.length > 0) {
-            // Only show catalog templates if no discovered models are available
+          // Show available models from the provider (fetched live via available-models endpoint)
+          if (templates.length > 0) {
             templates.forEach((m) => {
               const suffix =
-                provider?.interface_type === "HUGGINGFACE" && hfInstalledRepoIds.value.has(m.name)
+                provider?.category === "LOCAL" && hfInstalledRepoIds.value.has(m.name)
                   ? ` (${t("admin.pages.models.hf.installedSuffix")})`
                   : "";
+              const displayLabel =
+                m.display_name && m.display_name !== m.name
+                  ? `${m.display_name} — ${m.name}${suffix}`
+                  : `${m.name}${suffix}`;
               opts.push({
-                label: `${m.display_name} — ${m.name}${suffix}`,
+                label: displayLabel,
                 value: m.name,
-                group: "catalog",
+                group: "Available Models",
               });
             });
           }
