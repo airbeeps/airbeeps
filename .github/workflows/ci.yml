@@ -55,7 +55,7 @@ jobs:
           AIRBEEPS_MAIL_ENABLED: "false"
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: backend/coverage.xml
           flags: backend
