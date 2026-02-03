@@ -1,0 +1,163 @@
+version: "3.9"
+
+x-airbeeps-common: &airbeeps-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: airbeeps/app
+  environment: &airbeeps-env
+    AIRBEEPS_CONFIG_ENV: docker
+    AIRBEEPS_ENVIRONMENT: production
+    AIRBEEPS_SECRET_KEY: ${AIRBEEPS_SECRET_KEY}
+    AIRBEEPS_DATABASE_URL: postgresql+asyncpg://airbeeps:${POSTGRES_PASSWORD}@postgres:5432/airbeeps
+    AIRBEEPS_DATA_ROOT: /app/data
+    AIRBEEPS_FRONTEND_URL: http://localhost:8080
+    AIRBEEPS_EXTERNAL_URL: http://localhost:8080
+    # File Storage (S3/MinIO)
+    AIRBEEPS_FILE_STORAGE_BACKEND: s3
+    AIRBEEPS_S3_ENDPOINT_URL: http://minio:9000
+    AIRBEEPS_S3_EXTERNAL_ENDPOINT_URL: http://localhost:9000
+    AIRBEEPS_S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+    AIRBEEPS_S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    AIRBEEPS_S3_BUCKET_NAME: ${MINIO_BUCKET}
+    AIRBEEPS_S3_REGION: us-east-1
+    AIRBEEPS_S3_USE_SSL: "false"
+    AIRBEEPS_S3_ADDRESSING_STYLE: path
+    AIRBEEPS_S3_SIGNATURE_VERSION: s3v4
+    # Redis Cache
+    AIRBEEPS_REDIS_ENABLED: "true"
+    AIRBEEPS_REDIS_URL: redis://redis:6379/0
+    # Celery Task Queue
+    AIRBEEPS_CELERY_ENABLED: "true"
+    AIRBEEPS_CELERY_BROKER_URL: redis://redis:6379/1
+    AIRBEEPS_CELERY_RESULT_BACKEND: redis://redis:6379/2
+    # Logging
+    AIRBEEPS_LOG_LEVEL: INFO
+  volumes:
+    - airbeeps-data:/app/data
+
+services:
+  airbeeps:
+    <<: *airbeeps-common
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/v1/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Celery worker for background tasks (document ingestion, memory compaction)
+  celery-worker:
+    <<: *airbeeps-common
+    restart: unless-stopped
+    command: celery -A airbeeps.tasks.celery_app worker --loglevel=info --concurrency=4
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+  # Celery beat for scheduled tasks (cleanup, analytics)
+  celery-beat:
+    <<: *airbeeps-common
+    restart: unless-stopped
+    command: celery -A airbeeps.tasks.celery_app beat --loglevel=info
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: airbeeps
+      POSTGRES_USER: airbeeps
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set minio http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD; do
+        echo 'Waiting for MinIO...';
+        sleep 2;
+      done;
+      mc mb --ignore-existing minio/$$MINIO_BUCKET;
+      mc anonymous set download minio/$$MINIO_BUCKET;
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    restart: "no"
+
+volumes:
+  airbeeps-data:
+  postgres-data:
+  redis-data:
+  qdrant-data:
+  minio-data:
