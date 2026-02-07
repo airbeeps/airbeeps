@@ -108,6 +108,27 @@ const supportsVision = computed(() => {
   return selectedAssistant.value.model.capabilities.includes("vision");
 });
 
+// Use chat preferences store for model selector and web search state persistence
+const chatPreferencesStore = useChatPreferencesStore();
+const selectedModelId = computed(() => chatPreferencesStore.selectedModelId);
+const webSearchEnabled = computed({
+  get: () => chatPreferencesStore.webSearchEnabled,
+  set: (val) => chatPreferencesStore.setWebSearchEnabled(val),
+});
+
+const showWebSearchToggle = computed(() => {
+  // Security: Hide toggle until config is loaded
+  if (!configStore.isLoaded) return false;
+  const configAllows = configStore.config.ui_show_web_search_toggle !== false;
+  const assistantHasWebSearch =
+    selectedAssistant.value?.agent_enabled_tools?.includes("web_search");
+  return configAllows && assistantHasWebSearch;
+});
+
+const handleModelSelect = (modelId: string | null) => {
+  chatPreferencesStore.setSelectedModelId(modelId);
+};
+
 const resetPageState = () => {
   messages.value = [];
   newMessage.value = "";
@@ -233,12 +254,13 @@ const showLanding = computed(() => {
   return messages.value.length === 0 && !isCreatingConversation.value;
 });
 
+// Security: Hide toggles until config is loaded to respect admin settings
 const showMessageShareButton = computed(
-  () => configStore.config.ui_show_message_share_button !== false
+  () => configStore.isLoaded && configStore.config.ui_show_message_share_button !== false
 );
 
 const showAssistantDropdown = computed(
-  () => configStore.config.ui_show_assistant_dropdown !== false
+  () => configStore.isLoaded && configStore.config.ui_show_assistant_dropdown !== false
 );
 
 onMounted(() => {
@@ -402,7 +424,9 @@ watchEffect(() => {
       :assistant="selectedAssistant"
       :assistants="assistants"
       :show-landing-input="showLanding"
+      :selected-model-id="selectedModelId"
       @select-assistant="handleAssistantChange"
+      @select-model="handleModelSelect"
     >
       <ChatWelcome
         v-if="showLanding"
@@ -433,6 +457,9 @@ watchEffect(() => {
           :disabled="inputDisabled || isLoading"
           :send-disabled="inputDisabled || isLoading || !newMessage.trim()"
           :supports-vision="supportsVision"
+          :show-web-search-toggle="showWebSearchToggle"
+          :web-search-enabled="webSearchEnabled"
+          @update:web-search-enabled="webSearchEnabled = $event"
           @keydown="handleInputKeydown"
           @focus="handleInputFocus"
           @click="handleInputFocus"

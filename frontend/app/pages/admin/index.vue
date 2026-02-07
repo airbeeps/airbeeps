@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Users, MessageSquare, Zap } from "lucide-vue-next";
+import { Button } from "@/components/ui/button";
+import { Users, MessageSquare, Zap, Plus, Database, Activity, ArrowRight } from "lucide-vue-next";
 
 const { t } = useI18n();
+const router = useRouter();
 
 definePageMeta({
   layout: "admin",
@@ -55,6 +57,33 @@ const formatDate = (dateStr: string) => new Date(dateStr).toLocaleDateString();
       {{ t("common.loading") }}
     </div>
     <div v-else-if="stats" class="space-y-4">
+      <!-- Quick Actions -->
+      <Card class="border-dashed">
+        <CardHeader class="pb-3">
+          <CardTitle class="text-base font-medium">Quick Actions</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div class="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" @click="router.push('/admin/assistants/create')">
+              <Plus class="mr-2 h-4 w-4" />
+              New Assistant
+            </Button>
+            <Button variant="outline" size="sm" @click="router.push('/admin/kbs')">
+              <Database class="mr-2 h-4 w-4" />
+              Add Knowledge Base
+            </Button>
+            <Button variant="outline" size="sm" @click="router.push('/admin/agent-traces')">
+              <Activity class="mr-2 h-4 w-4" />
+              View Traces
+            </Button>
+            <Button variant="outline" size="sm" @click="router.push('/admin/system-health')">
+              <ArrowRight class="mr-2 h-4 w-4" />
+              System Health
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <!-- Overview Cards -->
       <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <Card>

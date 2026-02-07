@@ -51,8 +51,9 @@ const supportsVision = computed(() => {
   return assistant.value.model.capabilities.includes("vision");
 });
 
+// Security: Hide toggle until config is loaded to respect admin settings
 const showMessageShareButton = computed(
-  () => configStore.config.ui_show_message_share_button !== false
+  () => configStore.isLoaded && configStore.config.ui_show_message_share_button !== false
 );
 
 if (import.meta.server) {

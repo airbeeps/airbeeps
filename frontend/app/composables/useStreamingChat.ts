@@ -90,7 +90,11 @@ export function useStreamingChat() {
     onError?: (error: string) => void,
     onAgentStep?: (step: AgentStep) => void,
     onReasoningTrace?: (trace: ReasoningTracePayload) => void,
-    images?: ImageAttachment[]
+    images?: ImageAttachment[],
+    options?: {
+      modelIdOverride?: string | null;
+      webSearchEnabled?: boolean | null;
+    }
   ) => {
     try {
       const requestBody: any = {
@@ -103,6 +107,16 @@ export function useStreamingChat() {
       const serializedImages = serializeImagePayload(images);
       if (serializedImages) {
         requestBody.images = serializedImages;
+      }
+
+      // Add model override if provided
+      if (options?.modelIdOverride) {
+        requestBody.model_id_override = options.modelIdOverride;
+      }
+
+      // Add web search toggle if provided
+      if (options?.webSearchEnabled !== undefined && options?.webSearchEnabled !== null) {
+        requestBody.web_search_enabled = options.webSearchEnabled;
       }
 
       // console.log('Sending request to /v1/chat with body:', requestBody)
@@ -224,9 +238,36 @@ export function useStreamingChat() {
     return response;
   };
 
+  /**
+   * Edit a user message and optionally regenerate the assistant response
+   */
+  const editMessage = async (
+    conversationId: string,
+    messageId: string,
+    newContent: string,
+    regenerate: boolean = true
+  ): Promise<{
+    message: Message;
+    deleted_count: number;
+  }> => {
+    const response = await $api<{
+      message: Message;
+      deleted_count: number;
+    }>(`/v1/chat/conversations/${conversationId}/messages/${messageId}/edit`, {
+      method: "PATCH",
+      body: {
+        content: newContent,
+        regenerate,
+      },
+    });
+
+    return response;
+  };
+
   return {
     sendStreamingMessage,
     sendSyncMessage,
+    editMessage,
   };
 }
 

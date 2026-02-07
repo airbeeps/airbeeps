@@ -9,6 +9,7 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Switch } from "~/components/ui/switch";
 import { Textarea } from "~/components/ui/textarea";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import {
   Select,
   SelectContent,
@@ -36,6 +37,9 @@ import type {
   SystemConfigListResponse,
   SystemConfigItem,
 } from "~/types/api";
+
+// Active tab state
+const activeTab = ref("basic");
 
 const { t } = useI18n();
 
@@ -129,6 +133,34 @@ const followupsGlobalMaxCount = computed(() => {
 const followupQuestionsEnabled = ref(true);
 const followupQuestionsCount = ref<string>("__global__");
 
+// Agent settings
+const agentEnabled = ref(false);
+const agentMaxIterations = ref(10);
+const agentEnabledTools = ref<string[]>([]);
+const agentTokenBudget = ref(8000);
+const agentMaxToolCalls = ref(20);
+const agentCostLimitUsd = ref(0.5);
+const agentEnablePlanning = ref(true);
+const agentEnableReflection = ref(true);
+const agentReflectionThreshold = ref(7.0);
+const enableMemory = ref(false);
+
+// Fetch available tools
+const { data: availableTools } = useAPI<{
+  local_tools: Array<{ name: string; description: string; security_level?: string }>;
+  mcp_servers: Array<{ id: string; name: string }>;
+}>("/v1/admin/tools", {
+  server: false,
+});
+const localToolOptions = computed(() =>
+  (availableTools.value?.local_tools ?? []).map((t) => ({
+    label: t.name,
+    value: t.name,
+    description: t.description,
+    securityLevel: t.security_level || "safe",
+  }))
+);
+
 // Form data
 const formData = ref<Partial<Assistant>>({
   name: "",
@@ -215,6 +247,18 @@ const loadAssistant = async () => {
             )
           )
         : "__global__";
+
+    // Agent settings
+    agentEnabled.value = response.enable_agent ?? false;
+    agentMaxIterations.value = response.agent_max_iterations ?? 10;
+    agentEnabledTools.value = response.agent_enabled_tools ?? [];
+    agentTokenBudget.value = response.agent_token_budget ?? 8000;
+    agentMaxToolCalls.value = response.agent_max_tool_calls ?? 20;
+    agentCostLimitUsd.value = response.agent_cost_limit_usd ?? 0.5;
+    agentEnablePlanning.value = response.agent_enable_planning ?? true;
+    agentEnableReflection.value = response.agent_enable_reflection ?? true;
+    agentReflectionThreshold.value = response.agent_reflection_threshold ?? 7.0;
+    enableMemory.value = response.enable_memory ?? false;
 
     // Generation override values (only meaningful when not inheriting)
     generationOverride.value = {
@@ -366,6 +410,17 @@ const updateAssistant = async () => {
               Math.max(1, Number(followupQuestionsCount.value))
             )
         : null,
+      // Agent settings
+      enable_agent: agentEnabled.value,
+      agent_max_iterations: agentMaxIterations.value,
+      agent_enabled_tools: agentEnabledTools.value,
+      agent_token_budget: agentTokenBudget.value,
+      agent_max_tool_calls: agentMaxToolCalls.value,
+      agent_cost_limit_usd: agentCostLimitUsd.value,
+      agent_enable_planning: agentEnablePlanning.value,
+      agent_enable_reflection: agentEnableReflection.value,
+      agent_reflection_threshold: agentReflectionThreshold.value,
+      enable_memory: enableMemory.value,
     };
 
     if (!useGlobalGenerationDefaults.value) {
@@ -492,400 +547,685 @@ onMounted(() => {
       <div class="border-primary h-8 w-8 animate-spin rounded-full border-b-2"></div>
     </div>
 
-    <!-- Form card -->
-    <Card v-else-if="assistant" class="max-w-4xl">
-      <CardHeader>
-        <CardTitle>{{ t("admin.pages.assistants.edit.title") }}</CardTitle>
-        <CardDescription>
-          {{ t("admin.pages.assistants.edit.description") }}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form @submit.prevent="updateAssistant" class="space-y-6">
-          <!-- Basic info -->
-          <div class="space-y-4">
-            <!-- Avatar -->
-            <div class="space-y-2">
-              <Label for="avatar">{{
-                t("admin.pages.assistants.create.basicInfo.avatarLabel")
-              }}</Label>
-              <AvatarUpload
-                id="avatar"
-                v-model="formData.avatar_file_path"
-                :initial-url="assistant?.avatar_url"
-                :disabled="saveLoading"
-              />
-            </div>
+    <!-- Form with Tabs -->
+    <div v-else-if="assistant" class="max-w-4xl space-y-6">
+      <Tabs v-model="activeTab" class="w-full">
+        <TabsList class="grid w-full grid-cols-4">
+          <TabsTrigger value="basic">Basic</TabsTrigger>
+          <TabsTrigger value="model">Model</TabsTrigger>
+          <TabsTrigger value="agent">Agent</TabsTrigger>
+          <TabsTrigger value="advanced">Advanced</TabsTrigger>
+        </TabsList>
 
-            <!-- Name -->
-            <div class="space-y-2">
-              <Label for="name">
-                {{ t("admin.pages.assistants.create.basicInfo.nameLabel") }}
-                <span class="text-destructive">*</span>
-              </Label>
-              <Input
-                id="name"
-                v-model="formData.name"
-                :placeholder="t('admin.pages.assistants.create.basicInfo.namePlaceholder')"
-                :class="{ 'border-destructive': errors.name }"
-                :disabled="saveLoading"
-              />
-              <div v-if="errors.name" class="text-destructive text-sm">
-                {{ errors.name }}
+        <!-- Basic Tab -->
+        <TabsContent value="basic">
+          <Card>
+            <CardHeader>
+              <CardTitle>Basic Information</CardTitle>
+              <CardDescription>Name, description, avatar, and mode settings</CardDescription>
+            </CardHeader>
+            <CardContent class="space-y-4">
+              <!-- Avatar -->
+              <div class="space-y-2">
+                <Label for="avatar">{{
+                  t("admin.pages.assistants.create.basicInfo.avatarLabel")
+                }}</Label>
+                <AvatarUpload
+                  id="avatar"
+                  v-model="formData.avatar_file_path"
+                  :initial-url="assistant?.avatar_url"
+                  :disabled="saveLoading"
+                />
               </div>
-            </div>
 
-            <!-- Description -->
-            <div class="space-y-2">
-              <Label for="description">
-                {{ t("admin.pages.assistants.create.basicInfo.descriptionLabel") }}
-              </Label>
-              <Textarea
-                id="description"
-                v-model="formData.description"
-                :placeholder="t('admin.pages.assistants.create.basicInfo.descriptionPlaceholder')"
-                :rows="3"
-                :class="{ 'border-destructive': errors.description }"
-                :disabled="saveLoading"
-              />
-              <div v-if="errors.description" class="text-destructive text-sm">
-                {{ errors.description }}
-              </div>
-            </div>
-
-            <!-- Mode -->
-            <div class="space-y-2">
-              <Label for="mode">Mode</Label>
-              <Select v-model="mode" :disabled="saveLoading">
-                <SelectTrigger>
-                  <SelectValue placeholder="Select mode" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="GENERAL">General</SelectItem>
-                  <SelectItem value="RAG">RAG</SelectItem>
-                </SelectContent>
-              </Select>
-              <div class="text-muted-foreground text-sm">
-                Choose General for regular chat, or RAG to use knowledge bases.
-              </div>
-            </div>
-          </div>
-
-          <!-- Model config -->
-          <div class="space-y-4">
-            <h3 class="text-lg font-medium">
-              {{ t("admin.pages.assistants.create.modelConfig.title") }}
-            </h3>
-
-            <!-- System prompt -->
-            <div class="space-y-2">
-              <div class="flex items-center justify-between">
-                <Label for="system_prompt">
-                  {{ t("admin.pages.assistants.create.modelConfig.systemPromptLabel") }}
+              <!-- Name -->
+              <div class="space-y-2">
+                <Label for="name">
+                  {{ t("admin.pages.assistants.create.basicInfo.nameLabel") }}
                   <span class="text-destructive">*</span>
                 </Label>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  class="h-8 w-8"
-                  @click="systemPromptExpanded = !systemPromptExpanded"
-                  :aria-expanded="systemPromptExpanded"
-                  :aria-controls="'system_prompt'"
-                >
-                  <ChevronDown v-if="!systemPromptExpanded" class="h-4 w-4" />
-                  <ChevronUp v-else class="h-4 w-4" />
-                </Button>
-              </div>
-
-              <div v-if="!systemPromptExpanded" class="bg-muted/40 space-y-2 rounded-md border p-3">
-                <div class="text-muted-foreground text-xs">
-                  {{ t("admin.pages.assistants.create.modelConfig.systemPromptPlaceholder") }}
-                </div>
-                <div class="text-foreground line-clamp-3 text-sm whitespace-pre-wrap">
-                  {{ systemPromptPreview }}
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  class="mt-1"
-                  @click="systemPromptExpanded = true"
-                >
-                  <ChevronDown class="mr-1 h-4 w-4" /> {{ t("common.expand") || "Expand" }}
-                </Button>
-              </div>
-
-              <Textarea
-                v-else
-                id="system_prompt"
-                v-model="formData.system_prompt"
-                :placeholder="
-                  t('admin.pages.assistants.create.modelConfig.systemPromptPlaceholder')
-                "
-                :rows="8"
-                :class="{ 'border-destructive': errors.system_prompt }"
-                :disabled="saveLoading"
-              />
-              <div v-if="errors.system_prompt" class="text-destructive text-sm">
-                {{ errors.system_prompt }}
-              </div>
-              <div class="text-muted-foreground text-sm">
-                {{ t("admin.pages.assistants.create.modelConfig.systemPromptHelp") }}
-              </div>
-            </div>
-
-            <!-- Model selection -->
-            <div class="space-y-2">
-              <Label for="model_id">
-                {{ t("admin.pages.assistants.create.modelConfig.modelLabel") }}
-                <span class="text-destructive">*</span>
-              </Label>
-              <Select v-model="formData.model_id" :disabled="saveLoading">
-                <SelectTrigger :class="{ 'border-destructive': errors.model_id }">
-                  <SelectValue
-                    :placeholder="t('admin.pages.assistants.create.modelConfig.modelPlaceholder')"
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem v-for="model in modelOptions" :key="model.value" :value="model.value">
-                    {{ model.label }}
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              <div v-if="errors.model_id" class="text-destructive text-sm">
-                {{ errors.model_id }}
-              </div>
-              <div class="text-muted-foreground text-sm">
-                {{ t("admin.pages.assistants.create.modelConfig.modelHelp") }}
-              </div>
-            </div>
-
-            <!-- History -->
-            <div class="space-y-2">
-              <Label for="max_history_messages">{{
-                t("admin.pages.assistants.create.modelConfig.maxHistoryLabel")
-              }}</Label>
-              <Input
-                id="max_history_messages"
-                v-model.number="formData.max_history_messages"
-                type="number"
-                placeholder="10"
-                min="0"
-                max="100"
-                :disabled="saveLoading"
-                class="max-w-xs"
-              />
-              <div class="text-muted-foreground text-sm">
-                {{ t("admin.pages.assistants.create.modelConfig.maxHistoryHelp") }}
-              </div>
-            </div>
-          </div>
-
-          <!-- Generation Defaults -->
-          <div class="space-y-4">
-            <h3 class="text-lg font-medium">Generation</h3>
-            <div class="bg-muted/30 space-y-3 rounded-md border p-4">
-              <div class="flex items-center justify-between gap-3">
-                <div class="text-sm font-semibold">Use global generation defaults</div>
-                <div class="flex items-center gap-2">
-                  <Button
-                    v-if="!useGlobalGenerationDefaults"
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    :disabled="saveLoading"
-                    @click="useGlobalGenerationDefaults = true"
-                  >
-                    Reset to global
-                  </Button>
-                  <Switch
-                    id="use-global-generation"
-                    :model-value="useGlobalGenerationDefaults"
-                    @update:model-value="(v: boolean) => (useGlobalGenerationDefaults = v)"
-                    :disabled="saveLoading"
-                  />
+                <Input
+                  id="name"
+                  v-model="formData.name"
+                  :placeholder="t('admin.pages.assistants.create.basicInfo.namePlaceholder')"
+                  :class="{ 'border-destructive': errors.name }"
+                  :disabled="saveLoading"
+                />
+                <div v-if="errors.name" class="text-destructive text-sm">
+                  {{ errors.name }}
                 </div>
               </div>
-              <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <div class="space-y-2">
-                  <Label for="gen-temperature">Temperature</Label>
-                  <Input
-                    id="gen-temperature"
-                    type="number"
-                    :model-value="
-                      useGlobalGenerationDefaults
-                        ? generationDefaults.temperature
-                        : generationOverride.temperature
-                    "
-                    :disabled="saveLoading || useGlobalGenerationDefaults"
-                    min="0"
-                    max="2"
-                    step="0.1"
-                    @update:modelValue="(v: any) => (generationOverride.temperature = Number(v))"
-                  />
-                </div>
-                <div class="space-y-2">
-                  <Label for="gen-max-tokens">Max tokens</Label>
-                  <Input
-                    id="gen-max-tokens"
-                    type="number"
-                    :model-value="
-                      useGlobalGenerationDefaults
-                        ? generationDefaults.max_tokens
-                        : generationOverride.max_tokens
-                    "
-                    :disabled="saveLoading || useGlobalGenerationDefaults"
-                    min="1"
-                    max="100000"
-                    @update:modelValue="(v: any) => (generationOverride.max_tokens = Number(v))"
-                  />
-                </div>
-              </div>
+
+              <!-- Description -->
               <div class="space-y-2">
-                <Label for="gen-additional">Additional params (JSON)</Label>
+                <Label for="description">
+                  {{ t("admin.pages.assistants.create.basicInfo.descriptionLabel") }}
+                </Label>
                 <Textarea
-                  id="gen-additional"
-                  :model-value="
-                    useGlobalGenerationDefaults
-                      ? JSON.stringify(generationDefaults.additional_params || {}, null, 2)
-                      : generationOverride.additional_params_text
-                  "
-                  :disabled="saveLoading || useGlobalGenerationDefaults"
-                  :rows="6"
-                  class="font-mono text-xs"
-                  @update:modelValue="
-                    (v: any) => (generationOverride.additional_params_text = String(v))
-                  "
+                  id="description"
+                  v-model="formData.description"
+                  :placeholder="t('admin.pages.assistants.create.basicInfo.descriptionPlaceholder')"
+                  :rows="3"
+                  :class="{ 'border-destructive': errors.description }"
+                  :disabled="saveLoading"
                 />
+                <div v-if="errors.description" class="text-destructive text-sm">
+                  {{ errors.description }}
+                </div>
               </div>
-            </div>
-          </div>
 
-          <!-- Follow-up Questions -->
-          <div class="space-y-4">
-            <h3 class="text-lg font-medium">Follow-up Questions</h3>
-            <div class="bg-muted/30 space-y-3 rounded-md border p-4">
-              <div v-if="!followupsGlobalEnabled" class="text-muted-foreground text-sm">
-                Disabled globally in System Config. Enable
-                <strong>Generate Follow-up Questions</strong> to use this feature.
-              </div>
-              <div class="flex items-center justify-between gap-3">
-                <div class="text-sm font-semibold">Enable follow-up questions</div>
-                <Switch
-                  id="assistant-followups-enabled"
-                  :model-value="followupQuestionsEnabled"
-                  @update:model-value="(v: boolean) => (followupQuestionsEnabled = v)"
-                  :disabled="saveLoading || !followupsGlobalEnabled"
-                />
-              </div>
+              <!-- Mode -->
               <div class="space-y-2">
-                <Label for="assistant-followups-count">Follow-up count</Label>
-                <Select
-                  v-model="followupQuestionsCount"
-                  :disabled="saveLoading || !followupsGlobalEnabled || !followupQuestionsEnabled"
-                >
-                  <SelectTrigger id="assistant-followups-count" class="max-w-xs">
-                    <SelectValue />
+                <Label for="mode">Mode</Label>
+                <Select v-model="mode" :disabled="saveLoading">
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select mode" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__global__">
-                      Use global ({{ followupsGlobalMaxCount }})
-                    </SelectItem>
-                    <SelectItem
-                      v-for="n in Array.from({ length: followupsGlobalMaxCount }, (_, i) => i + 1)"
-                      :key="n"
-                      :value="String(n)"
-                    >
-                      {{ n }}
-                    </SelectItem>
+                    <SelectItem value="GENERAL">General</SelectItem>
+                    <SelectItem value="RAG">RAG</SelectItem>
                   </SelectContent>
                 </Select>
                 <div class="text-muted-foreground text-sm">
-                  Max allowed: {{ followupsGlobalMaxCount }} (set in System Config).
+                  Choose General for regular chat, or RAG to use knowledge bases.
                 </div>
               </div>
-            </div>
-          </div>
 
-          <!-- Publish settings -->
-          <div class="space-y-4">
-            <h3 class="text-lg font-medium">
-              {{ t("admin.pages.assistants.create.publishSettings.title") }}
-            </h3>
+              <!-- Status -->
+              <div class="space-y-2">
+                <div class="flex items-center gap-1">
+                  <Label for="status">
+                    {{ t("admin.pages.assistants.create.publishSettings.statusLabel") }}
+                    <span class="text-destructive">*</span>
+                  </Label>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger as-child>
+                        <button
+                          type="button"
+                          class="inline-flex cursor-help"
+                          aria-label="status-help"
+                        >
+                          <Info class="text-muted-foreground h-3.5 w-3.5" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="right" class="max-w-xs text-left">
+                        <div class="space-y-1">
+                          <div>
+                            <strong>Active:</strong> Working normally and available to users
+                          </div>
+                          <div><strong>Inactive:</strong> Paused and unavailable to users</div>
+                          <div>
+                            <strong>Draft:</strong> Configuration incomplete, visible only to admins
+                          </div>
+                        </div>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </div>
+                <Select v-model="formData.status" :disabled="saveLoading">
+                  <SelectTrigger :class="{ 'border-destructive': errors.status }">
+                    <SelectValue
+                      :placeholder="
+                        t('admin.pages.assistants.create.publishSettings.statusPlaceholder')
+                      "
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ACTIVE">{{
+                      t("admin.pages.assistants.create.publishSettings.statuses.active")
+                    }}</SelectItem>
+                    <SelectItem value="INACTIVE">{{
+                      t("admin.pages.assistants.create.publishSettings.statuses.inactive")
+                    }}</SelectItem>
+                    <SelectItem value="DRAFT">{{
+                      t("admin.pages.assistants.create.publishSettings.statuses.draft")
+                    }}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div v-if="errors.status" class="text-destructive text-sm">{{ errors.status }}</div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-            <!-- Public toggle -->
-            <div class="flex items-center space-x-2">
-              <input
-                id="is_public"
-                type="checkbox"
-                v-model="formData.is_public"
-                :disabled="saveLoading"
-                class="text-primary focus:ring-primary h-4 w-4 rounded border-gray-300"
-              />
-              <Label for="is_public" class="cursor-pointer text-sm">
-                {{ t("admin.pages.assistants.create.publishSettings.isPublicLabel") }}
-              </Label>
-            </div>
+        <!-- Model Tab -->
+        <TabsContent value="model">
+          <Card>
+            <CardHeader>
+              <CardTitle>{{ t("admin.pages.assistants.create.modelConfig.title") }}</CardTitle>
+              <CardDescription
+                >System prompt, model selection, and generation settings</CardDescription
+              >
+            </CardHeader>
+            <CardContent class="space-y-6">
+              <!-- System prompt -->
+              <div class="space-y-2">
+                <div class="flex items-center justify-between">
+                  <Label for="system_prompt">
+                    {{ t("admin.pages.assistants.create.modelConfig.systemPromptLabel") }}
+                    <span class="text-destructive">*</span>
+                  </Label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    class="h-8 w-8"
+                    @click="systemPromptExpanded = !systemPromptExpanded"
+                    :aria-expanded="systemPromptExpanded"
+                    :aria-controls="'system_prompt'"
+                  >
+                    <ChevronDown v-if="!systemPromptExpanded" class="h-4 w-4" />
+                    <ChevronUp v-else class="h-4 w-4" />
+                  </Button>
+                </div>
 
-            <!-- Status -->
-            <div class="space-y-2">
-              <div class="flex items-center gap-1">
-                <Label for="status">
-                  {{ t("admin.pages.assistants.create.publishSettings.statusLabel") }}
+                <div
+                  v-if="!systemPromptExpanded"
+                  class="bg-muted/40 space-y-2 rounded-md border p-3"
+                >
+                  <div class="text-muted-foreground text-xs">
+                    {{ t("admin.pages.assistants.create.modelConfig.systemPromptPlaceholder") }}
+                  </div>
+                  <div class="text-foreground line-clamp-3 text-sm whitespace-pre-wrap">
+                    {{ systemPromptPreview }}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    class="mt-1"
+                    @click="systemPromptExpanded = true"
+                  >
+                    <ChevronDown class="mr-1 h-4 w-4" /> {{ t("common.expand") || "Expand" }}
+                  </Button>
+                </div>
+
+                <Textarea
+                  v-else
+                  id="system_prompt"
+                  v-model="formData.system_prompt"
+                  :placeholder="
+                    t('admin.pages.assistants.create.modelConfig.systemPromptPlaceholder')
+                  "
+                  :rows="8"
+                  :class="{ 'border-destructive': errors.system_prompt }"
+                  :disabled="saveLoading"
+                />
+                <div v-if="errors.system_prompt" class="text-destructive text-sm">
+                  {{ errors.system_prompt }}
+                </div>
+                <div class="text-muted-foreground text-sm">
+                  {{ t("admin.pages.assistants.create.modelConfig.systemPromptHelp") }}
+                </div>
+              </div>
+
+              <!-- Model selection -->
+              <div class="space-y-2">
+                <Label for="model_id">
+                  {{ t("admin.pages.assistants.create.modelConfig.modelLabel") }}
                   <span class="text-destructive">*</span>
                 </Label>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger as-child>
-                      <button
+                <Select v-model="formData.model_id" :disabled="saveLoading">
+                  <SelectTrigger :class="{ 'border-destructive': errors.model_id }">
+                    <SelectValue
+                      :placeholder="t('admin.pages.assistants.create.modelConfig.modelPlaceholder')"
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem
+                      v-for="model in modelOptions"
+                      :key="model.value"
+                      :value="model.value"
+                    >
+                      {{ model.label }}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+                <div v-if="errors.model_id" class="text-destructive text-sm">
+                  {{ errors.model_id }}
+                </div>
+                <div class="text-muted-foreground text-sm">
+                  {{ t("admin.pages.assistants.create.modelConfig.modelHelp") }}
+                </div>
+              </div>
+
+              <!-- History -->
+              <div class="space-y-2">
+                <Label for="max_history_messages">{{
+                  t("admin.pages.assistants.create.modelConfig.maxHistoryLabel")
+                }}</Label>
+                <Input
+                  id="max_history_messages"
+                  v-model.number="formData.max_history_messages"
+                  type="number"
+                  placeholder="10"
+                  min="0"
+                  max="100"
+                  :disabled="saveLoading"
+                  class="max-w-xs"
+                />
+                <div class="text-muted-foreground text-sm">
+                  {{ t("admin.pages.assistants.create.modelConfig.maxHistoryHelp") }}
+                </div>
+              </div>
+
+              <!-- Generation Defaults -->
+              <div class="space-y-4 border-t pt-4">
+                <h4 class="text-base font-medium">Generation Settings</h4>
+                <div class="bg-muted/30 space-y-3 rounded-md border p-4">
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="text-sm font-semibold">Use global generation defaults</div>
+                    <div class="flex items-center gap-2">
+                      <Button
+                        v-if="!useGlobalGenerationDefaults"
                         type="button"
-                        class="inline-flex cursor-help"
-                        aria-label="status-help"
+                        variant="outline"
+                        size="sm"
+                        :disabled="saveLoading"
+                        @click="useGlobalGenerationDefaults = true"
                       >
-                        <Info class="text-muted-foreground h-3.5 w-3.5" />
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="right" class="max-w-xs text-left">
-                      <div class="space-y-1">
-                        <div><strong>Active:</strong> Working normally and available to users</div>
-                        <div><strong>Inactive:</strong> Paused and unavailable to users</div>
-                        <div>
-                          <strong>Draft:</strong> Configuration incomplete, visible only to admins
+                        Reset to global
+                      </Button>
+                      <Switch
+                        id="use-global-generation"
+                        :model-value="useGlobalGenerationDefaults"
+                        @update:model-value="(v: boolean) => (useGlobalGenerationDefaults = v)"
+                        :disabled="saveLoading"
+                      />
+                    </div>
+                  </div>
+                  <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    <div class="space-y-2">
+                      <Label for="gen-temperature">Temperature</Label>
+                      <Input
+                        id="gen-temperature"
+                        type="number"
+                        :model-value="
+                          useGlobalGenerationDefaults
+                            ? generationDefaults.temperature
+                            : generationOverride.temperature
+                        "
+                        :disabled="saveLoading || useGlobalGenerationDefaults"
+                        min="0"
+                        max="2"
+                        step="0.1"
+                        @update:modelValue="
+                          (v: any) => (generationOverride.temperature = Number(v))
+                        "
+                      />
+                    </div>
+                    <div class="space-y-2">
+                      <Label for="gen-max-tokens">Max tokens</Label>
+                      <Input
+                        id="gen-max-tokens"
+                        type="number"
+                        :model-value="
+                          useGlobalGenerationDefaults
+                            ? generationDefaults.max_tokens
+                            : generationOverride.max_tokens
+                        "
+                        :disabled="saveLoading || useGlobalGenerationDefaults"
+                        min="1"
+                        max="100000"
+                        @update:modelValue="(v: any) => (generationOverride.max_tokens = Number(v))"
+                      />
+                    </div>
+                  </div>
+                  <div class="space-y-2">
+                    <Label for="gen-additional">Additional params (JSON)</Label>
+                    <Textarea
+                      id="gen-additional"
+                      :model-value="
+                        useGlobalGenerationDefaults
+                          ? JSON.stringify(generationDefaults.additional_params || {}, null, 2)
+                          : generationOverride.additional_params_text
+                      "
+                      :disabled="saveLoading || useGlobalGenerationDefaults"
+                      :rows="4"
+                      class="font-mono text-xs"
+                      @update:modelValue="
+                        (v: any) => (generationOverride.additional_params_text = String(v))
+                      "
+                    />
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <!-- Agent Tab -->
+        <TabsContent value="agent">
+          <Card>
+            <CardHeader>
+              <CardTitle>Agent Settings</CardTitle>
+              <CardDescription
+                >Configure agent mode, tools, iterations, and budget limits</CardDescription
+              >
+            </CardHeader>
+            <CardContent class="space-y-4">
+              <!-- Enable Agent -->
+              <div class="space-y-4">
+                <h3 class="text-lg font-medium">Agent Settings</h3>
+                <div class="bg-muted/30 space-y-4 rounded-md border p-4">
+                  <!-- Enable Agent -->
+                  <div class="flex items-center justify-between gap-3">
+                    <div>
+                      <div class="text-sm font-semibold">Enable Agent Mode</div>
+                      <div class="text-muted-foreground text-sm">
+                        Allow assistant to use tools (web search, code execution, etc.)
+                      </div>
+                    </div>
+                    <Switch
+                      id="enable-agent"
+                      :model-value="agentEnabled"
+                      @update:model-value="(v: boolean) => (agentEnabled = v)"
+                      :disabled="saveLoading"
+                    />
+                  </div>
+
+                  <div v-if="agentEnabled" class="space-y-4 border-t pt-4">
+                    <!-- Tool Selection -->
+                    <div class="space-y-2">
+                      <Label>Enabled Tools</Label>
+                      <div class="grid grid-cols-2 gap-2 md:grid-cols-3">
+                        <div
+                          v-for="tool in localToolOptions"
+                          :key="tool.value"
+                          class="flex items-start space-x-2 rounded-md border p-2"
+                          :class="{
+                            'border-primary bg-primary/5': agentEnabledTools.includes(tool.value),
+                            'border-yellow-500': tool.securityLevel === 'moderate',
+                            'border-red-500': tool.securityLevel === 'dangerous',
+                          }"
+                        >
+                          <input
+                            type="checkbox"
+                            :id="`tool-${tool.value}`"
+                            :value="tool.value"
+                            v-model="agentEnabledTools"
+                            :disabled="saveLoading"
+                            class="text-primary focus:ring-primary mt-0.5 h-4 w-4 rounded border-gray-300"
+                          />
+                          <label :for="`tool-${tool.value}`" class="cursor-pointer text-sm">
+                            <div class="font-medium">{{ tool.label }}</div>
+                            <div class="text-muted-foreground text-xs">{{ tool.description }}</div>
+                          </label>
                         </div>
                       </div>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
+                      <div
+                        v-if="localToolOptions.length === 0"
+                        class="text-muted-foreground text-sm"
+                      >
+                        No tools available. Check backend configuration.
+                      </div>
+                    </div>
+
+                    <!-- Max Iterations -->
+                    <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div class="space-y-2">
+                        <div class="flex items-center gap-1">
+                          <Label for="agent-max-iterations">Max Iterations</Label>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger as-child>
+                                <button type="button" class="inline-flex cursor-help">
+                                  <Info class="text-muted-foreground h-3.5 w-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent class="max-w-xs"
+                                >Maximum reasoning loops. Each iteration lets the agent think, use
+                                tools, and refine its response.</TooltipContent
+                              >
+                            </Tooltip>
+                          </TooltipProvider>
+                        </div>
+                        <Input
+                          id="agent-max-iterations"
+                          type="number"
+                          v-model.number="agentMaxIterations"
+                          :disabled="saveLoading"
+                          min="1"
+                          max="50"
+                        />
+                      </div>
+                      <div class="space-y-2">
+                        <Label for="agent-max-tool-calls">Max Tool Calls</Label>
+                        <Input
+                          id="agent-max-tool-calls"
+                          type="number"
+                          v-model.number="agentMaxToolCalls"
+                          :disabled="saveLoading"
+                          min="1"
+                          max="100"
+                        />
+                      </div>
+                    </div>
+
+                    <!-- Budget Controls -->
+                    <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                      <div class="space-y-2">
+                        <div class="flex items-center gap-1">
+                          <Label for="agent-token-budget">Token Budget</Label>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger as-child>
+                                <button type="button" class="inline-flex cursor-help">
+                                  <Info class="text-muted-foreground h-3.5 w-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent class="max-w-xs"
+                                >Max tokens per turn. 8000 tokens ≈ $0.02-0.08 depending on
+                                model.</TooltipContent
+                              >
+                            </Tooltip>
+                          </TooltipProvider>
+                        </div>
+                        <Input
+                          id="agent-token-budget"
+                          type="number"
+                          v-model.number="agentTokenBudget"
+                          :disabled="saveLoading"
+                          min="1000"
+                          max="100000"
+                          step="1000"
+                        />
+                      </div>
+                      <div class="space-y-2">
+                        <div class="flex items-center gap-1">
+                          <Label for="agent-cost-limit">Cost Limit (USD)</Label>
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger as-child>
+                                <button type="button" class="inline-flex cursor-help">
+                                  <Info class="text-muted-foreground h-3.5 w-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent class="max-w-xs"
+                                >Max API cost per conversation. $0.50 allows ~25k tokens with
+                                GPT-4.</TooltipContent
+                              >
+                            </Tooltip>
+                          </TooltipProvider>
+                        </div>
+                        <Input
+                          id="agent-cost-limit"
+                          type="number"
+                          v-model.number="agentCostLimitUsd"
+                          :disabled="saveLoading"
+                          min="0.01"
+                          max="10"
+                          step="0.05"
+                        />
+                      </div>
+                    </div>
+
+                    <!-- Behavior Settings -->
+                    <div class="space-y-3 border-t pt-4">
+                      <div class="text-sm font-semibold">Behavior</div>
+                      <div class="flex items-center justify-between gap-3">
+                        <div class="text-sm">Enable Planning</div>
+                        <Switch
+                          id="agent-enable-planning"
+                          :model-value="agentEnablePlanning"
+                          @update:model-value="(v: boolean) => (agentEnablePlanning = v)"
+                          :disabled="saveLoading"
+                        />
+                      </div>
+                      <div class="flex items-center justify-between gap-3">
+                        <div class="text-sm">Enable Reflection</div>
+                        <Switch
+                          id="agent-enable-reflection"
+                          :model-value="agentEnableReflection"
+                          @update:model-value="(v: boolean) => (agentEnableReflection = v)"
+                          :disabled="saveLoading"
+                        />
+                      </div>
+                      <div v-if="agentEnableReflection" class="space-y-2">
+                        <div class="flex items-center gap-1">
+                          <Label for="agent-reflection-threshold"
+                            >Reflection Threshold (0-10)</Label
+                          >
+                          <TooltipProvider>
+                            <Tooltip>
+                              <TooltipTrigger as-child>
+                                <button type="button" class="inline-flex cursor-help">
+                                  <Info class="text-muted-foreground h-3.5 w-3.5" />
+                                </button>
+                              </TooltipTrigger>
+                              <TooltipContent class="max-w-xs"
+                                >Quality score threshold. If self-assessed quality is below this
+                                (0-10), agent retries. Higher = stricter.</TooltipContent
+                              >
+                            </Tooltip>
+                          </TooltipProvider>
+                        </div>
+                        <Input
+                          id="agent-reflection-threshold"
+                          type="number"
+                          v-model.number="agentReflectionThreshold"
+                          :disabled="saveLoading"
+                          min="0"
+                          max="10"
+                          step="0.5"
+                        />
+                      </div>
+                    </div>
+
+                    <!-- Memory Settings -->
+                    <div class="flex items-center justify-between gap-3 border-t pt-4">
+                      <div>
+                        <div class="text-sm font-semibold">Enable Memory</div>
+                        <div class="text-muted-foreground text-sm">
+                          Store long-term memories for personalization
+                        </div>
+                      </div>
+                      <Switch
+                        id="enable-memory"
+                        :model-value="enableMemory"
+                        @update:model-value="(v: boolean) => (enableMemory = v)"
+                        :disabled="saveLoading"
+                      />
+                    </div>
+                  </div>
+                </div>
               </div>
-              <Select v-model="formData.status" :disabled="saveLoading">
-                <SelectTrigger :class="{ 'border-destructive': errors.status }">
-                  <SelectValue
-                    :placeholder="
-                      t('admin.pages.assistants.create.publishSettings.statusPlaceholder')
-                    "
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <!-- Advanced Tab -->
+        <TabsContent value="advanced">
+          <Card>
+            <CardHeader>
+              <CardTitle>Advanced Settings</CardTitle>
+              <CardDescription>Publish settings and visibility options</CardDescription>
+            </CardHeader>
+            <CardContent class="space-y-4">
+              <!-- Publish settings -->
+              <div class="space-y-4">
+                <h3 class="text-lg font-medium">
+                  {{ t("admin.pages.assistants.create.publishSettings.title") }}
+                </h3>
+
+                <!-- Public toggle -->
+                <div class="flex items-center space-x-2">
+                  <input
+                    id="is_public"
+                    type="checkbox"
+                    v-model="formData.is_public"
+                    :disabled="saveLoading"
+                    class="text-primary focus:ring-primary h-4 w-4 rounded border-gray-300"
                   />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ACTIVE">{{
-                    t("admin.pages.assistants.create.publishSettings.statuses.active")
-                  }}</SelectItem>
-                  <SelectItem value="INACTIVE">{{
-                    t("admin.pages.assistants.create.publishSettings.statuses.inactive")
-                  }}</SelectItem>
-                  <SelectItem value="DRAFT">{{
-                    t("admin.pages.assistants.create.publishSettings.statuses.draft")
-                  }}</SelectItem>
-                </SelectContent>
-              </Select>
-              <div v-if="errors.status" class="text-destructive text-sm">
-                {{ errors.status }}
+                  <Label for="is_public" class="cursor-pointer text-sm">
+                    {{ t("admin.pages.assistants.create.publishSettings.isPublicLabel") }}
+                  </Label>
+                </div>
+
+                <!-- Status -->
+                <div class="space-y-2">
+                  <div class="flex items-center gap-1">
+                    <Label for="status">
+                      {{ t("admin.pages.assistants.create.publishSettings.statusLabel") }}
+                      <span class="text-destructive">*</span>
+                    </Label>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger as-child>
+                          <button
+                            type="button"
+                            class="inline-flex cursor-help"
+                            aria-label="status-help"
+                          >
+                            <Info class="text-muted-foreground h-3.5 w-3.5" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="right" class="max-w-xs text-left">
+                          <div class="space-y-1">
+                            <div>
+                              <strong>Active:</strong> Working normally and available to users
+                            </div>
+                            <div><strong>Inactive:</strong> Paused and unavailable to users</div>
+                            <div>
+                              <strong>Draft:</strong> Configuration incomplete, visible only to
+                              admins
+                            </div>
+                          </div>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </div>
+                  <Select v-model="formData.status" :disabled="saveLoading">
+                    <SelectTrigger :class="{ 'border-destructive': errors.status }">
+                      <SelectValue
+                        :placeholder="
+                          t('admin.pages.assistants.create.publishSettings.statusPlaceholder')
+                        "
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ACTIVE">{{
+                        t("admin.pages.assistants.create.publishSettings.statuses.active")
+                      }}</SelectItem>
+                      <SelectItem value="INACTIVE">{{
+                        t("admin.pages.assistants.create.publishSettings.statuses.inactive")
+                      }}</SelectItem>
+                      <SelectItem value="DRAFT">{{
+                        t("admin.pages.assistants.create.publishSettings.statuses.draft")
+                      }}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <div v-if="errors.status" class="text-destructive text-sm">
+                    {{ errors.status }}
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-        </form>
-      </CardContent>
-    </Card>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+    </div>
 
     <!-- RAG Config -->
     <div v-if="assistant && mode === 'RAG'" class="max-w-4xl space-y-4">

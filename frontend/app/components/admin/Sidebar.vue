@@ -11,10 +11,21 @@ import {
   Settings,
   LayoutDashboard,
   ChevronRight,
-  Workflow,
   UserCog,
   Sliders,
+  Wrench,
+  Server,
+  Activity,
+  Sparkles,
+  BarChart3,
+  Users2,
+  Search,
+  ThumbsUp,
 } from "lucide-vue-next";
+import GlobalSearchModal from "~/components/admin/GlobalSearchModal.vue";
+
+// Global search state
+const searchOpen = ref(false);
 
 const route = useRoute();
 const router = useRouter();
@@ -22,9 +33,50 @@ const runtimeConfig = useRuntimeConfig();
 const unsavedChangesStore = useUnsavedChangesStore();
 const enableOAuthProviders = computed(() => !!runtimeConfig.public.enableOAuthProviders);
 
+// Section collapse states
+const dashboardOpen = ref(true);
+const assistantsOpen = ref(false);
 const modelsOpen = ref(false);
-const ragOpen = ref(false);
+const agentsOpen = ref(false);
 const userManagementOpen = ref(false);
+const settingsOpen = ref(false);
+
+// Auto-expand sections based on current route
+watchEffect(() => {
+  const path = route.path;
+  if (
+    path.startsWith("/admin/assistants") ||
+    path.startsWith("/admin/kbs") ||
+    path.startsWith("/admin/assistant-defaults")
+  ) {
+    assistantsOpen.value = true;
+  }
+  if (path.startsWith("/admin/model") || path === "/admin/models") {
+    modelsOpen.value = true;
+  }
+  if (
+    path.startsWith("/admin/agent") ||
+    path.startsWith("/admin/mcp") ||
+    path.startsWith("/admin/specialist")
+  ) {
+    agentsOpen.value = true;
+  }
+  if (
+    path.startsWith("/admin/users") ||
+    path.startsWith("/admin/conversations") ||
+    path.startsWith("/admin/users/roles") ||
+    path.startsWith("/admin/feedback")
+  ) {
+    userManagementOpen.value = true;
+  }
+  if (
+    path.startsWith("/admin/system-config") ||
+    path.startsWith("/admin/oauth") ||
+    path.startsWith("/admin/audit-logs")
+  ) {
+    settingsOpen.value = true;
+  }
+});
 
 const handleLogoClick = async () => {
   if (unsavedChangesStore.isDirty && process.client) {
@@ -64,12 +116,28 @@ const goBackToUser = () => {
           <span class="truncate text-xs">{{ $t("admin.dashboard") }}</span>
         </div>
       </SidebarMenuButton>
+
+      <!-- Global Search Button -->
+      <SidebarMenuButton
+        size="sm"
+        class="text-muted-foreground hover:text-foreground mt-2 justify-start gap-2"
+        @click="searchOpen = true"
+      >
+        <Search class="h-4 w-4" />
+        <span class="flex-1 text-left text-sm">{{ $t("admin.globalSearch.button") }}</span>
+        <kbd
+          class="bg-muted pointer-events-none inline-flex h-5 items-center gap-1 rounded border px-1.5 font-mono text-[10px] font-medium opacity-100 select-none"
+        >
+          ⌘K
+        </kbd>
+      </SidebarMenuButton>
     </SidebarHeader>
     <SidebarContent>
       <SidebarGroup>
         <SidebarGroupContent>
           <SidebarMenu>
-            <Collapsible :default-open="true" class="group/collapsible">
+            <!-- Dashboard Section -->
+            <Collapsible v-model:open="dashboardOpen" class="group/collapsible">
               <SidebarMenuItem>
                 <CollapsibleTrigger as-child>
                   <SidebarMenuButton tooltip="Dashboard">
@@ -90,9 +158,13 @@ const goBackToUser = () => {
                       </SidebarMenuSubButton>
                     </SidebarMenuSubItem>
                     <SidebarMenuSubItem>
-                      <SidebarMenuSubButton as-child :is-active="route.path === '/admin/analytics'">
-                        <NuxtLink to="/admin/analytics">
-                          <span>Analytics</span>
+                      <SidebarMenuSubButton
+                        as-child
+                        :is-active="route.path === '/admin/system-health'"
+                      >
+                        <NuxtLink to="/admin/system-health">
+                          <Activity class="h-4 w-4" />
+                          <span>System Health</span>
                         </NuxtLink>
                       </SidebarMenuSubButton>
                     </SidebarMenuSubItem>
@@ -101,6 +173,74 @@ const goBackToUser = () => {
               </SidebarMenuItem>
             </Collapsible>
 
+            <!-- Assistants Section (promoted to top-level) -->
+            <Collapsible v-model:open="assistantsOpen" class="group/collapsible">
+              <SidebarMenuItem>
+                <CollapsibleTrigger as-child>
+                  <SidebarMenuButton tooltip="Assistants">
+                    <Bot />
+                    <span>Assistants</span>
+                    <ChevronRight
+                      class="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90"
+                    />
+                  </SidebarMenuButton>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <SidebarMenuSub>
+                    <SidebarMenuSubItem>
+                      <SidebarMenuSubButton
+                        as-child
+                        :is-active="
+                          route.path === '/admin/assistants' ||
+                          (route.path.startsWith('/admin/assistants/') &&
+                            !route.path.includes('/settings'))
+                        "
+                      >
+                        <NuxtLink to="/admin/assistants">
+                          <Bot />
+                          <span>{{ $t("admin.sidebar.assistants") }}</span>
+                        </NuxtLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
+                    <SidebarMenuSubItem>
+                      <SidebarMenuSubButton
+                        as-child
+                        :is-active="route.path.startsWith('/admin/kbs')"
+                      >
+                        <NuxtLink to="/admin/kbs">
+                          <Database />
+                          <span>{{ $t("admin.sidebar.knowledgeBases") }}</span>
+                        </NuxtLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
+                    <SidebarMenuSubItem>
+                      <SidebarMenuSubButton
+                        as-child
+                        :is-active="route.path.startsWith('/admin/assistant-defaults')"
+                      >
+                        <NuxtLink to="/admin/assistant-defaults">
+                          <Sliders />
+                          <span>{{ $t("admin.sidebar.assistantDefaults") }}</span>
+                        </NuxtLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
+                    <SidebarMenuSubItem>
+                      <SidebarMenuSubButton
+                        as-child
+                        :is-active="route.path === '/admin/assistants/settings'"
+                      >
+                        <NuxtLink to="/admin/assistants/settings">
+                          <Settings />
+                          <span>Settings</span>
+                        </NuxtLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
+                  </SidebarMenuSub>
+                </CollapsibleContent>
+              </SidebarMenuItem>
+            </Collapsible>
+
+            <!-- Models Section -->
             <Collapsible v-model:open="modelsOpen" class="group/collapsible">
               <SidebarMenuItem>
                 <CollapsibleTrigger as-child>
@@ -133,17 +273,29 @@ const goBackToUser = () => {
                         </NuxtLink>
                       </SidebarMenuSubButton>
                     </SidebarMenuSubItem>
+                    <SidebarMenuSubItem>
+                      <SidebarMenuSubButton
+                        as-child
+                        :is-active="route.path === '/admin/model-analytics'"
+                      >
+                        <NuxtLink to="/admin/model-analytics">
+                          <BarChart3 />
+                          <span>Analytics</span>
+                        </NuxtLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
                   </SidebarMenuSub>
                 </CollapsibleContent>
               </SidebarMenuItem>
             </Collapsible>
 
-            <Collapsible v-model:open="ragOpen" class="group/collapsible">
+            <!-- Agents Section -->
+            <Collapsible v-model:open="agentsOpen" class="group/collapsible">
               <SidebarMenuItem>
                 <CollapsibleTrigger as-child>
-                  <SidebarMenuButton tooltip="RAG">
-                    <Workflow />
-                    <span>RAG</span>
+                  <SidebarMenuButton tooltip="Agents">
+                    <Sparkles />
+                    <span>Agents</span>
                     <ChevronRight
                       class="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90"
                     />
@@ -154,48 +306,44 @@ const goBackToUser = () => {
                     <SidebarMenuSubItem>
                       <SidebarMenuSubButton
                         as-child
-                        :is-active="
-                          route.path === '/admin/assistants' ||
-                          (route.path.startsWith('/admin/assistants') &&
-                            !route.path.includes('/settings'))
-                        "
+                        :is-active="route.path === '/admin/agent-tools'"
                       >
-                        <NuxtLink to="/admin/assistants">
-                          <Bot />
-                          <span>{{ $t("admin.sidebar.assistants") }}</span>
+                        <NuxtLink to="/admin/agent-tools">
+                          <Wrench />
+                          <span>Tools</span>
                         </NuxtLink>
                       </SidebarMenuSubButton>
                     </SidebarMenuSubItem>
                     <SidebarMenuSubItem>
                       <SidebarMenuSubButton
                         as-child
-                        :is-active="route.path === '/admin/assistants/settings'"
+                        :is-active="route.path.startsWith('/admin/specialists')"
                       >
-                        <NuxtLink to="/admin/assistants/settings">
-                          <Settings />
-                          <span>Settings</span>
+                        <NuxtLink to="/admin/specialists">
+                          <Users2 />
+                          <span>Specialists</span>
                         </NuxtLink>
                       </SidebarMenuSubButton>
                     </SidebarMenuSubItem>
                     <SidebarMenuSubItem>
                       <SidebarMenuSubButton
                         as-child
-                        :is-active="route.path.startsWith('/admin/kbs')"
+                        :is-active="route.path.startsWith('/admin/mcp-servers')"
                       >
-                        <NuxtLink to="/admin/kbs">
-                          <Database />
-                          <span>{{ $t("admin.sidebar.knowledgeBases") }}</span>
+                        <NuxtLink to="/admin/mcp-servers">
+                          <Server />
+                          <span>MCP Servers</span>
                         </NuxtLink>
                       </SidebarMenuSubButton>
                     </SidebarMenuSubItem>
                     <SidebarMenuSubItem>
                       <SidebarMenuSubButton
                         as-child
-                        :is-active="route.path.startsWith('/admin/assistant-defaults')"
+                        :is-active="route.path.startsWith('/admin/agent-traces')"
                       >
-                        <NuxtLink to="/admin/assistant-defaults">
-                          <Sliders />
-                          <span>{{ $t("admin.sidebar.assistantDefaults") }}</span>
+                        <NuxtLink to="/admin/agent-traces">
+                          <Activity />
+                          <span>Traces</span>
                         </NuxtLink>
                       </SidebarMenuSubButton>
                     </SidebarMenuSubItem>
@@ -204,12 +352,13 @@ const goBackToUser = () => {
               </SidebarMenuItem>
             </Collapsible>
 
+            <!-- Users Section -->
             <Collapsible v-model:open="userManagementOpen" class="group/collapsible">
               <SidebarMenuItem>
                 <CollapsibleTrigger as-child>
-                  <SidebarMenuButton tooltip="User Management">
+                  <SidebarMenuButton tooltip="Users">
                     <UserCog />
-                    <span>User Management</span>
+                    <span>Users</span>
                     <ChevronRight
                       class="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90"
                     />
@@ -235,17 +384,6 @@ const goBackToUser = () => {
                     <SidebarMenuSubItem>
                       <SidebarMenuSubButton
                         as-child
-                        :is-active="route.path === '/admin/users/settings'"
-                      >
-                        <NuxtLink to="/admin/users/settings">
-                          <Settings />
-                          <span>Settings</span>
-                        </NuxtLink>
-                      </SidebarMenuSubButton>
-                    </SidebarMenuSubItem>
-                    <SidebarMenuSubItem>
-                      <SidebarMenuSubButton
-                        as-child
                         :is-active="route.path === '/admin/conversations'"
                       >
                         <NuxtLink to="/admin/conversations">
@@ -254,36 +392,95 @@ const goBackToUser = () => {
                         </NuxtLink>
                       </SidebarMenuSubButton>
                     </SidebarMenuSubItem>
+                    <SidebarMenuSubItem>
+                      <SidebarMenuSubButton
+                        as-child
+                        :is-active="route.path.startsWith('/admin/feedback')"
+                      >
+                        <NuxtLink to="/admin/feedback">
+                          <ThumbsUp />
+                          <span>{{ $t("admin.sidebar.feedback") }}</span>
+                        </NuxtLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
+                    <SidebarMenuSubItem>
+                      <SidebarMenuSubButton
+                        as-child
+                        :is-active="route.path === '/admin/users/roles'"
+                      >
+                        <NuxtLink to="/admin/users/roles">
+                          <UserCog />
+                          <span>{{ $t("admin.sidebar.roles") }}</span>
+                        </NuxtLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
+                    <SidebarMenuSubItem>
+                      <SidebarMenuSubButton
+                        as-child
+                        :is-active="route.path === '/admin/users/settings'"
+                      >
+                        <NuxtLink to="/admin/users/settings">
+                          <Settings />
+                          <span>Settings</span>
+                        </NuxtLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
                   </SidebarMenuSub>
                 </CollapsibleContent>
               </SidebarMenuItem>
             </Collapsible>
 
-            <SidebarMenuItem v-if="enableOAuthProviders">
-              <SidebarMenuButton
-                as-child
-                :is-active="route.path.startsWith('/admin/oauth-providers')"
-                tooltip="OAuth Providers"
-              >
-                <NuxtLink to="/admin/oauth-providers">
-                  <Key />
-                  <span>{{ $t("admin.sidebar.oauthProviders") }}</span>
-                </NuxtLink>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-
-            <SidebarMenuItem>
-              <SidebarMenuButton
-                as-child
-                :is-active="route.path.startsWith('/admin/system-config')"
-                tooltip="System Config"
-              >
-                <NuxtLink to="/admin/system-config">
-                  <Settings />
-                  <span>{{ $t("admin.sidebar.systemConfig") }}</span>
-                </NuxtLink>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+            <!-- Settings Section (consolidated) -->
+            <Collapsible v-model:open="settingsOpen" class="group/collapsible">
+              <SidebarMenuItem>
+                <CollapsibleTrigger as-child>
+                  <SidebarMenuButton tooltip="Settings">
+                    <Settings />
+                    <span>Settings</span>
+                    <ChevronRight
+                      class="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90"
+                    />
+                  </SidebarMenuButton>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <SidebarMenuSub>
+                    <SidebarMenuSubItem>
+                      <SidebarMenuSubButton
+                        as-child
+                        :is-active="route.path.startsWith('/admin/system-config')"
+                      >
+                        <NuxtLink to="/admin/system-config">
+                          <Settings />
+                          <span>{{ $t("admin.sidebar.systemConfig") }}</span>
+                        </NuxtLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
+                    <SidebarMenuSubItem v-if="enableOAuthProviders">
+                      <SidebarMenuSubButton
+                        as-child
+                        :is-active="route.path.startsWith('/admin/oauth-providers')"
+                      >
+                        <NuxtLink to="/admin/oauth-providers">
+                          <Key />
+                          <span>{{ $t("admin.sidebar.oauthProviders") }}</span>
+                        </NuxtLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
+                    <SidebarMenuSubItem>
+                      <SidebarMenuSubButton
+                        as-child
+                        :is-active="route.path.startsWith('/admin/audit-logs')"
+                      >
+                        <NuxtLink to="/admin/audit-logs">
+                          <Activity />
+                          <span>{{ $t("admin.sidebar.auditLogs") }}</span>
+                        </NuxtLink>
+                      </SidebarMenuSubButton>
+                    </SidebarMenuSubItem>
+                  </SidebarMenuSub>
+                </CollapsibleContent>
+              </SidebarMenuItem>
+            </Collapsible>
           </SidebarMenu>
         </SidebarGroupContent>
       </SidebarGroup>
@@ -303,5 +500,8 @@ const goBackToUser = () => {
       <NavUser />
     </SidebarFooter>
     <SidebarRail />
+
+    <!-- Global Search Modal -->
+    <GlobalSearchModal v-model:open="searchOpen" />
   </Sidebar>
 </template>

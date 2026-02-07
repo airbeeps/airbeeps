@@ -65,6 +65,23 @@ type HfResolveResponse = {
   asset_id?: string | null;
 };
 
+type HfHubSearchResult = {
+  repo_id: string;
+  display_name: string;
+  downloads?: number | null;
+  likes?: number | null;
+  pipeline_tag?: string | null;
+  library_name?: string | null;
+  is_installed?: boolean;
+};
+
+type HfHubSearchResponse = {
+  query: string;
+  results: HfHubSearchResult[];
+  next_cursor?: string | null;
+  external_enabled?: boolean;
+};
+
 const { data: hfEmbeddingAssets, refresh: refreshHfEmbeddingAssets } = useAPI<ModelAsset[]>(
   "/v1/admin/model-assets/huggingface/embeddings?status=READY",
   {
@@ -128,6 +145,12 @@ const hfDownloadRepoId = ref<string | null>(null);
 const lastHfPromptedRepoId = ref<string | null>(null);
 const hfResolveInFlight = ref<Record<string, boolean>>({});
 
+const hfHubSearchResults = ref<HfHubSearchResult[]>([]);
+const hfHubSearchQuery = ref("");
+const hfHubSearchExternalEnabled = ref(true);
+const hfHubSearchLoading = ref(false);
+const hfHubSearchTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+
 const handleHfDownloadConfirm = async () => {
   if (hfDownloadRepoId.value) {
     await queueHfDownload(hfDownloadRepoId.value);
@@ -187,6 +210,43 @@ const maybePromptHfDownload = (repoId: string) => {
   })();
 };
 
+const resetHfHubSearch = () => {
+  hfHubSearchResults.value = [];
+  hfHubSearchQuery.value = "";
+  hfHubSearchExternalEnabled.value = true;
+  hfHubSearchLoading.value = false;
+  if (hfHubSearchTimer.value) {
+    clearTimeout(hfHubSearchTimer.value);
+    hfHubSearchTimer.value = null;
+  }
+};
+
+const runHfHubSearch = async (query: string) => {
+  hfHubSearchLoading.value = true;
+  hfHubSearchQuery.value = query;
+  try {
+    const response = await $api<HfHubSearchResponse>(
+      `/v1/admin/model-assets/huggingface/embeddings/search?q=${encodeURIComponent(query)}&limit=40`,
+      { method: "GET" }
+    );
+    hfHubSearchResults.value = response?.results ?? [];
+    hfHubSearchExternalEnabled.value = response?.external_enabled !== false;
+  } catch {
+    hfHubSearchResults.value = [];
+  } finally {
+    hfHubSearchLoading.value = false;
+  }
+};
+
+const scheduleHfHubSearch = (query: string) => {
+  if (hfHubSearchTimer.value) {
+    clearTimeout(hfHubSearchTimer.value);
+  }
+  hfHubSearchTimer.value = setTimeout(() => {
+    void runHfHubSearch(query);
+  }, 350);
+};
+
 // Model capability options
 const capabilityOptions = computed(() => [
   { label: t("admin.pages.models.capabilities.chat"), value: "chat" },
@@ -210,6 +270,17 @@ const capabilityOptions = computed(() => [
   { label: t("admin.pages.models.capabilities.reranker"), value: "reranker" },
 ]);
 
+const modelTemplateHelp = computed(() => {
+  const base = t("admin.pages.models.formFields.modelTemplateHelp");
+  const providerId = lastProviderId.value;
+  const provider = providerId ? providerMap.value[providerId] : undefined;
+  if (provider?.category !== "LOCAL") return base;
+  if (!hfHubSearchExternalEnabled.value) {
+    return `${base} ${t("admin.pages.models.hf.searchDisabled")}`;
+  }
+  return `${base} ${t("admin.pages.models.hf.searchHelp")}`;
+});
+
 // Model configuration
 const providerConfig = computed(
   (): ModelViewConfig<Model> => ({
@@ -227,6 +298,12 @@ const providerConfig = computed(
         lastHfPromptedRepoId.value = null;
         isInitialLoad.value = true;
         ensureModelTemplatesLoaded(providerId);
+        if (provider?.category === "LOCAL") {
+          resetHfHubSearch();
+          void runHfHubSearch("");
+        } else {
+          resetHfHubSearch();
+        }
       }
 
       const templateName = (formData?.template_id as string) || "";
@@ -280,8 +357,32 @@ const providerConfig = computed(
         lastAppliedTemplateKey.value = templateKey;
       }
 
+      if (provider?.category === "LOCAL") {
+        const manualRepoId = String(formData?.name || "").trim();
+        const repoParts = manualRepoId.split("/");
+        if (!templateName && repoParts.length === 2 && repoParts[0] && repoParts[1]) {
+          maybePromptHfDownload(manualRepoId);
+        }
+      }
+
       // Mark as no longer initial load after first template processing
       isInitialLoad.value = false;
+    },
+    onFormSearch: ({ fieldName, query, formData }) => {
+      if (fieldName !== "template_id") return;
+      const providerId = (formData?.provider_id as string) || "";
+      const provider = providerId ? providerMap.value[providerId] : undefined;
+      if (provider?.category !== "LOCAL") return;
+
+      const trimmed = (query || "").trim();
+      if (!trimmed) {
+        if (hfHubSearchResults.value.length === 0) {
+          void runHfHubSearch("");
+        }
+        return;
+      }
+      if (trimmed.length < 2 || trimmed === hfHubSearchQuery.value) return;
+      scheduleHfHubSearch(trimmed);
     },
 
     columns: [
@@ -464,6 +565,7 @@ const providerConfig = computed(
         label: t("admin.pages.models.formFields.modelTemplate"),
         type: "select",
         required: false,
+        searchable: true,
         options: (formData) => {
           const providerId = (formData?.provider_id as string) || "";
           const provider = providerId ? providerMap.value[providerId] : undefined;
@@ -471,6 +573,7 @@ const providerConfig = computed(
 
           // Build options list
           const opts: { label: string; value: string; group?: string }[] = [];
+          const seen = new Set<string>();
 
           // Add "None" option at the top
           opts.push({
@@ -485,6 +588,7 @@ const providerConfig = computed(
               (id) => !templates.some((t) => t.name === id)
             );
             installedOnly.forEach((id) => {
+              seen.add(id);
               opts.push({
                 label: `${t("admin.pages.models.hf.installedPrefix")}: ${id}`,
                 value: id,
@@ -496,6 +600,7 @@ const providerConfig = computed(
           // Show available models from the provider (fetched live via available-models endpoint)
           if (templates.length > 0) {
             templates.forEach((m) => {
+              seen.add(m.name);
               const suffix =
                 provider?.category === "LOCAL" && hfInstalledRepoIds.value.has(m.name)
                   ? ` (${t("admin.pages.models.hf.installedSuffix")})`
@@ -512,10 +617,30 @@ const providerConfig = computed(
             });
           }
 
+          if (provider?.category === "LOCAL" && hfHubSearchResults.value.length > 0) {
+            hfHubSearchResults.value.forEach((result) => {
+              const repoId = result.repo_id;
+              if (!repoId || seen.has(repoId)) return;
+              seen.add(repoId);
+              const isInstalled =
+                result.is_installed || hfInstalledRepoIds.value.has(repoId) ? true : false;
+              const suffix = isInstalled ? ` (${t("admin.pages.models.hf.installedSuffix")})` : "";
+              const displayLabel =
+                result.display_name && result.display_name !== repoId
+                  ? `${result.display_name} — ${repoId}${suffix}`
+                  : `${repoId}${suffix}`;
+              opts.push({
+                label: displayLabel,
+                value: repoId,
+                group: "HuggingFace Hub",
+              });
+            });
+          }
+
           return opts;
         },
         placeholder: t("admin.pages.models.formFields.modelTemplatePlaceholder"),
-        help: t("admin.pages.models.formFields.modelTemplateHelp"),
+        help: modelTemplateHelp.value,
       },
       {
         name: "name",

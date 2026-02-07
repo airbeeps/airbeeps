@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { Plus, Share2, Pin, PinOff } from "lucide-vue-next";
+import { Plus, Share2, Pin, PinOff, ChevronDown } from "lucide-vue-next";
 import { Button } from "~/components/ui/button";
 import { DropdownMenu, DropdownMenuContent } from "~/components/ui/dropdown-menu";
+import type { Model } from "~/types/api";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -89,12 +90,72 @@ const isLoadingHistory = ref(false);
 const assistant = ref<Assistant | null>(null);
 const isNewConversation = ref(false); // Track if this is a new conversation
 
-const showPinButton = computed(() => configStore.config.ui_show_pin_button !== false);
-const showShareButton = computed(() => configStore.config.ui_show_share_button !== false);
-const showMessageShareButton = computed(
-  () => configStore.config.ui_show_message_share_button !== false
+// Use chat preferences store for model selector and web search state persistence
+const chatPreferencesStore = useChatPreferencesStore();
+const selectedModelId = computed(() => chatPreferencesStore.selectedModelId);
+const webSearchEnabled = computed({
+  get: () => chatPreferencesStore.webSearchEnabled,
+  set: (val) => chatPreferencesStore.setWebSearchEnabled(val),
+});
+
+// Security: Hide toggles until config is loaded to respect admin settings
+const showPinButton = computed(
+  () => configStore.isLoaded && configStore.config.ui_show_pin_button !== false
 );
-const showCreateButton = computed(() => configStore.config.ui_show_create_button !== false);
+const showShareButton = computed(
+  () => configStore.isLoaded && configStore.config.ui_show_share_button !== false
+);
+const showMessageShareButton = computed(
+  () => configStore.isLoaded && configStore.config.ui_show_message_share_button !== false
+);
+const showCreateButton = computed(
+  () => configStore.isLoaded && configStore.config.ui_show_create_button !== false
+);
+const showWebSearchToggle = computed(() => {
+  // Security: Hide toggle until config is loaded
+  if (!configStore.isLoaded) return false;
+  // Show toggle only if config allows AND assistant has web_search in enabled tools
+  const configAllows = configStore.config.ui_show_web_search_toggle !== false;
+  const assistantHasWebSearch = assistant.value?.agent_enabled_tools?.includes("web_search");
+  return configAllows && assistantHasWebSearch;
+});
+
+// Model selector - Security: Hide until config is loaded
+const showModelSelector = computed(
+  () => configStore.isLoaded && configStore.config.ui_show_model_selector !== false
+);
+const { data: availableModels } = useAPI<Model[]>("/v1/models", {
+  server: false,
+  lazy: true,
+});
+
+const chatModels = computed(() => {
+  if (!availableModels.value) return [];
+  return availableModels.value.filter(
+    (m) => m.status === "ACTIVE" && m.capabilities?.includes("chat")
+  );
+});
+
+const currentModelId = computed(() => {
+  return selectedModelId.value || assistant.value?.model_id;
+});
+
+const currentModelName = computed(() => {
+  if (selectedModelId.value && chatModels.value.length > 0) {
+    const found = chatModels.value.find((m) => m.id === selectedModelId.value);
+    if (found) return found.display_name || found.name;
+  }
+  return assistant.value?.model?.display_name || assistant.value?.model?.name || "Model";
+});
+
+const handleModelSelect = (modelId: string | null) => {
+  // If selecting the assistant's default model, clear override
+  if (modelId === assistant.value?.model_id) {
+    chatPreferencesStore.setSelectedModelId(null);
+  } else {
+    chatPreferencesStore.setSelectedModelId(modelId);
+  }
+};
 
 type ShareScope = "CONVERSATION" | "MESSAGE";
 const shareDialogOpen = ref(false);
@@ -268,7 +329,7 @@ const initializeAssistant = async () => {
   }
 };
 
-const { sendStreamingMessage, sendSyncMessage } = useStreamingChat();
+const { sendStreamingMessage, sendSyncMessage, editMessage } = useStreamingChat();
 const { showError, showSuccess } = useNotifications();
 const { $api } = useNuxtApp();
 const { t } = useI18n();
@@ -572,6 +633,39 @@ const handleFollowupSelect = async (prompt: string) => {
   await sendMessage();
 };
 
+// Handle message edit - updates the message and triggers regeneration
+const handleEditMessage = async (messageId: string, newContent: string) => {
+  if (!currentConversationId.value) return;
+
+  try {
+    const result = await editMessage(
+      currentConversationId.value,
+      messageId,
+      newContent,
+      true // regenerate
+    );
+
+    // Update the message in the local state
+    const messageIndex = messages.value.findIndex((m) => m.id === messageId);
+    if (messageIndex !== -1) {
+      // Update the edited message
+      messages.value[messageIndex] = result.message;
+
+      // Remove messages after the edited one (they were deleted on the server)
+      if (result.deleted_count > 0) {
+        messages.value = messages.value.slice(0, messageIndex + 1);
+      }
+    }
+
+    showSuccess(t("chat.editSuccess"));
+
+    // Trigger regeneration by sending the edited message
+    await sendMessageFromStore(newContent);
+  } catch (error: any) {
+    showError(t("chat.editFailed"));
+  }
+};
+
 // Send message without adding user message to UI (for store-based messages)
 const sendMessageFromStore = async (messageContent: string, images?: ImageAttachment[]) => {
   if (!assistant.value) return;
@@ -785,7 +879,12 @@ const sendMessageInternal = async (
         }
       },
       // images
-      images
+      images,
+      // options for model override and web search
+      {
+        modelIdOverride: selectedModelId.value,
+        webSearchEnabled: showWebSearchToggle.value ? webSearchEnabled.value : null,
+      }
     );
   } catch (error) {
     // Remove the user message if sending failed
@@ -841,27 +940,61 @@ onUnmounted(() => {
   <div class="relative flex h-screen flex-col overflow-hidden">
     <!-- Header -->
     <AppHeader>
-      <Breadcrumb>
-        <BreadcrumbList>
-          <BreadcrumbItem class="hidden md:block">
-            <BreadcrumbLink as-child>
-              <NuxtLink to="/assistants">
-                {{ t("chat.breadcrumbAssistants") }}
-              </NuxtLink>
-            </BreadcrumbLink>
-          </BreadcrumbItem>
-          <BreadcrumbSeparator class="hidden md:block" />
-          <BreadcrumbItem>
-            <BreadcrumbPage class="flex items-center">
-              <AssistantAvatar
-                :assistant="assistant"
-                class="mr-1 inline-block size-4 align-middle"
-              />
-              {{ assistant?.name || t("common.loading") }}
-            </BreadcrumbPage>
-          </BreadcrumbItem>
-        </BreadcrumbList>
-      </Breadcrumb>
+      <div class="flex items-center gap-3">
+        <Breadcrumb>
+          <BreadcrumbList>
+            <BreadcrumbItem class="hidden md:block">
+              <BreadcrumbLink as-child>
+                <NuxtLink to="/assistants">
+                  {{ t("chat.breadcrumbAssistants") }}
+                </NuxtLink>
+              </BreadcrumbLink>
+            </BreadcrumbItem>
+            <BreadcrumbSeparator class="hidden md:block" />
+            <BreadcrumbItem>
+              <BreadcrumbPage class="flex items-center">
+                <AssistantAvatar
+                  :assistant="assistant"
+                  class="mr-1 inline-block size-4 align-middle"
+                />
+                {{ assistant?.name || t("common.loading") }}
+              </BreadcrumbPage>
+            </BreadcrumbItem>
+          </BreadcrumbList>
+        </Breadcrumb>
+
+        <!-- Model selector (compact dropdown) -->
+        <template v-if="showModelSelector && chatModels.length > 1">
+          <span class="text-muted-foreground/50 text-xs">·</span>
+          <Select :model-value="currentModelId" @update:model-value="handleModelSelect">
+            <SelectTrigger
+              data-testid="model-select"
+              class="text-muted-foreground hover:text-foreground h-7 w-auto gap-1 border-none bg-transparent px-2 text-xs shadow-none"
+            >
+              <span class="max-w-32 truncate">{{ currentModelName }}</span>
+              <ChevronDown class="size-3 opacity-50" />
+            </SelectTrigger>
+            <SelectContent align="start">
+              <SelectItem
+                v-for="model in chatModels"
+                :key="model.id"
+                :value="model.id"
+                class="text-sm"
+              >
+                <div class="flex items-center gap-2">
+                  <span>{{ model.display_name || model.name }}</span>
+                  <span
+                    v-if="model.id === assistant?.model_id"
+                    class="text-muted-foreground text-xs"
+                  >
+                    (default)
+                  </span>
+                </div>
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </template>
+      </div>
 
       <template #right>
         <div v-if="assistant" class="flex items-center gap-2">
@@ -953,6 +1086,7 @@ onUnmounted(() => {
               }
             "
             @followup="handleFollowupSelect"
+            @edit="handleEditMessage"
           />
 
           <!-- Loading indicator / Streaming message -->
@@ -1046,6 +1180,9 @@ onUnmounted(() => {
             :disabled="!isAssistantActive"
             :send-disabled="isLoading || !newMessage.trim() || !isAssistantActive"
             :supports-vision="supportsVision"
+            :show-web-search-toggle="showWebSearchToggle"
+            :web-search-enabled="webSearchEnabled"
+            @update:web-search-enabled="webSearchEnabled = $event"
             @send="sendMessage"
           />
         </div>

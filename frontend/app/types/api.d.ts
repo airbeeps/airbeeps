@@ -6,6 +6,7 @@ interface User {
   is_active?: boolean;
   is_superuser?: boolean;
   is_verified?: boolean;
+  role?: "admin" | "editor" | "viewer" | null;
   created_at: string;
 }
 
@@ -17,6 +18,11 @@ interface Message {
   user_message_id?: string;
   status?: "STREAMING" | "FINAL";
   extra_data?: Record<string, any>;
+  // Message editing fields
+  edited_at?: string | null;
+  original_content?: string | null;
+  is_regenerated?: boolean;
+  parent_message_id?: string | null;
 }
 
 interface ChatSession {
@@ -121,6 +127,9 @@ export interface PublicConfig {
   ui_generate_followup_questions?: boolean;
   ui_followup_question_count?: number;
   ui_show_signup_terms?: boolean;
+  ai_registry_allow_external?: boolean;
+  ui_show_model_selector?: boolean;
+  ui_show_web_search_toggle?: boolean;
 }
 
 export interface ConfigResponse {
@@ -255,6 +264,26 @@ interface Assistant {
   rag_config?: RagConfig;
   is_pinned?: boolean;
   translations?: Record<string, Record<string, string>>;
+  // Agent related fields
+  enable_agent?: boolean;
+  agent_max_iterations?: number;
+  agent_enabled_tools?: string[];
+  agent_tool_config?: Record<string, any>;
+  mcp_server_ids?: string[];
+  // Agent budget controls
+  agent_token_budget?: number;
+  agent_max_tool_calls?: number;
+  agent_cost_limit_usd?: number;
+  agent_max_parallel_tools?: number;
+  // Agent behavior settings
+  agent_enable_planning?: boolean;
+  agent_enable_reflection?: boolean;
+  agent_reflection_threshold?: number;
+  // Memory settings
+  enable_memory?: boolean;
+  // Multi-agent settings
+  specialist_type?: "RESEARCH" | "CODE" | "DATA" | "GENERAL" | null;
+  can_collaborate?: boolean;
 }
 
 interface KnowledgeBase {
@@ -321,10 +350,96 @@ interface LocalTool {
 interface MCPServer {
   id: string;
   name: string;
-  description: string;
+  description: string | null;
+  server_type: "STDIO" | "SSE" | "HTTP";
+  connection_config: Record<string, any>;
+  is_active: boolean;
+  extra_data: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+interface MCPServerEnvVar {
+  name: string;
+  description: string | null;
+  docs_url: string | null;
+  is_set: boolean;
+  value_preview: string | null;
+}
+
+interface MCPServerEnvCheckResponse {
+  server_name: string;
+  all_vars_set: boolean;
+  env_vars: MCPServerEnvVar[];
+  setup_instructions: string | null;
+}
+
+interface MCPServerHealthResponse {
+  server_id: string;
+  server_name: string;
+  is_active: boolean;
+  is_healthy: boolean;
+  status: "healthy" | "unhealthy" | "unconfigured" | "inactive" | "error";
+  message: string;
+  last_check_ms: number | null;
+  tools_count: number | null;
+}
+
+interface MCPServerTestResponse {
+  success: boolean;
+  message: string;
+  tools_count: number | null;
+  latency_ms: number | null;
 }
 
 interface AvailableAgentTools {
   local_tools: LocalTool[];
   mcp_servers: MCPServer[];
+}
+
+// Document Preprocessing Types (Smart Document Preprocessing)
+interface DocumentPreprocessingConfig {
+  // PDF options
+  pdf_max_pages?: number;
+  pdf_page_range?: string;
+  pdf_enable_ocr?: boolean;
+  // Excel/CSV options
+  sheet_names?: string[];
+  header_row?: number;
+  skip_rows?: number;
+  // Chunking options
+  chunking_strategy?: "auto" | "semantic" | "hierarchical" | "sentence";
+  chunk_size_override?: number;
+  chunk_overlap_override?: number;
+  // General options
+  extract_tables_as_markdown?: boolean;
+  clean_data?: boolean;
+}
+
+interface PdfInfoResponse {
+  page_count: number;
+  file_size_bytes: number;
+  has_text: boolean;
+  title?: string;
+  author?: string;
+  is_encrypted: boolean;
+}
+
+interface ExcelSheetInfo {
+  name: string;
+  row_count: number;
+  column_count: number;
+  columns: string[];
+}
+
+interface ExcelSheetsResponse {
+  sheets: ExcelSheetInfo[];
+  file_name?: string;
+}
+
+interface PreviewRowsResponse {
+  sheet_name?: string;
+  rows: Record<string, any>[];
+  columns: string[];
+  total_rows: number;
 }

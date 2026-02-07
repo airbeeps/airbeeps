@@ -1,15 +1,31 @@
 <script setup lang="ts">
-import { Plus, Edit, Eye, Languages } from "lucide-vue-next";
+import {
+  Plus,
+  Edit,
+  Eye,
+  Languages,
+  Bot,
+  Brain,
+  Database,
+  Activity,
+  Sparkles,
+  Download,
+  CheckCircle,
+  XCircle,
+  Trash2,
+} from "lucide-vue-next";
 import { computed, h, ref, onMounted, watch } from "vue";
 import type { ColumnDef, SortingState, PaginationState } from "@tanstack/vue-table";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "~/components/ui/avatar";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "~/components/ui/tooltip";
 import DataTable, {
   type FilterConfig,
   type ActionConfig,
 } from "~/components/model-view/DataTable.vue";
 import { useModelViewAPI } from "~/composables/useModelViewAPI";
+import { useExport } from "~/composables/useExport";
 import { toast } from "vue-sonner";
 import type { Assistant, Model } from "~/types/api";
 
@@ -22,6 +38,11 @@ definePageMeta({
 });
 
 const router = useRouter();
+const { $api } = useNuxtApp();
+const { exportCSV, exportJSON, exporting } = useExport();
+
+// Bulk action state
+const selectedRows = ref<Assistant[]>([]);
 
 // Fetch model list
 const { data: models } = useAPI<Model[]>("/v1/admin/all-models?capabilities=chat", {
@@ -76,12 +97,47 @@ const tableColumns = computed((): ColumnDef<Assistant>[] => [
     header: t("admin.pages.assistants.columns.model"),
   },
   {
-    accessorKey: "mode",
-    header: "Mode",
+    id: "features",
+    header: "Features",
     cell: (context) => {
-      const value = (context.getValue() as string) || "GENERAL";
-      const label = value === "RAG" ? "RAG" : "General";
-      return h(Badge, { variant: value === "RAG" ? "default" : "secondary" }, () => label);
+      const row = context.row.original;
+      const badges = [];
+
+      // Mode badge
+      if (row.mode === "RAG") {
+        badges.push(
+          h(Badge, { variant: "default", class: "gap-1 text-xs", title: "RAG Mode" }, () => [
+            h(Database, { class: "h-3 w-3" }),
+            "RAG",
+          ])
+        );
+      }
+
+      // Agent badge
+      if (row.enable_agent) {
+        badges.push(
+          h(Badge, { variant: "secondary", class: "gap-1 text-xs", title: "Agent Enabled" }, () => [
+            h(Sparkles, { class: "h-3 w-3" }),
+            "Agent",
+          ])
+        );
+      }
+
+      // Memory badge
+      if (row.enable_memory) {
+        badges.push(
+          h(Badge, { variant: "outline", class: "gap-1 text-xs", title: "Memory Enabled" }, () => [
+            h(Brain, { class: "h-3 w-3" }),
+            "Memory",
+          ])
+        );
+      }
+
+      if (badges.length === 0) {
+        badges.push(h(Badge, { variant: "secondary", class: "text-xs" }, () => "General"));
+      }
+
+      return h("div", { class: "flex flex-wrap gap-1" }, badges);
     },
   },
   {
@@ -90,13 +146,14 @@ const tableColumns = computed((): ColumnDef<Assistant>[] => [
     cell: (context) => {
       const value = context.getValue() as string;
       const statusConfig = {
-        ACTIVE: { key: "active", variant: "default" as const },
-        INACTIVE: { key: "inactive", variant: "secondary" as const },
-        DRAFT: { key: "draft", variant: "outline" as const },
+        ACTIVE: { key: "active", variant: "default" as const, icon: null },
+        INACTIVE: { key: "inactive", variant: "secondary" as const, icon: null },
+        DRAFT: { key: "draft", variant: "outline" as const, icon: null },
       };
       const config = statusConfig[value as keyof typeof statusConfig] || {
         key: value.toLowerCase(),
         variant: "secondary" as const,
+        icon: null,
       };
       return h(Badge, { variant: config.variant }, () =>
         t(`admin.pages.assistants.status.${config.key}`)
@@ -126,9 +183,44 @@ const rowActions = computed((): ActionConfig[] => [
     icon: Edit,
   },
   {
+    key: "traces",
+    label: "View Traces",
+    icon: Activity,
+  },
+  {
     key: "translations",
     label: t("admin.pages.assistants.actions.translations"),
     icon: Languages,
+  },
+  {
+    key: "exportConfig",
+    label: t("admin.export.json"),
+    icon: Download,
+  },
+]);
+
+// Bulk actions config
+const bulkActions = computed((): ActionConfig[] => [
+  {
+    key: "activate",
+    label: t("admin.bulkActions.activate"),
+    icon: CheckCircle,
+  },
+  {
+    key: "deactivate",
+    label: t("admin.bulkActions.deactivate"),
+    icon: XCircle,
+  },
+  {
+    key: "exportCSV",
+    label: t("admin.export.csv"),
+    icon: Download,
+  },
+  {
+    key: "delete",
+    label: t("admin.bulkActions.delete"),
+    icon: Trash2,
+    variant: "destructive",
   },
 ]);
 
@@ -148,6 +240,15 @@ const filterConfig = computed(
       options: [
         { label: "General", value: "GENERAL" },
         { label: "RAG", value: "RAG" },
+      ],
+    },
+    enable_agent: {
+      type: "select",
+      label: "Agent Mode",
+      placeholder: "Any",
+      options: [
+        { label: "Enabled", value: "true" },
+        { label: "Disabled", value: "false" },
       ],
     },
     status: {
@@ -216,6 +317,100 @@ const handlePaginate = (paginationState: PaginationState) => {
   loadData();
 };
 
+// Bulk status update
+const bulkUpdateStatus = async (rows: Assistant[], status: "ACTIVE" | "INACTIVE") => {
+  try {
+    await Promise.all(
+      rows.map((row) =>
+        $api(`/v1/admin/assistants/${row.id}`, {
+          method: "PATCH",
+          body: { status },
+        })
+      )
+    );
+    toast.success(t("admin.bulkActions.statusUpdated", { count: rows.length }));
+    loadData();
+  } catch (error) {
+    toast.error(t("admin.bulkActions.statusUpdateFailed"));
+  }
+};
+
+// Bulk delete
+const bulkDelete = async (rows: Assistant[]) => {
+  if (
+    !confirm(
+      t("components.modelView.deleteConfirmMultiple", { count: rows.length, title: "Assistants" })
+    )
+  ) {
+    return;
+  }
+  try {
+    await Promise.all(rows.map((row) => api.remove(row.id)));
+    toast.success(t("components.modelView.deleteSuccess", { title: "Assistants" }));
+    loadData();
+  } catch (error) {
+    toast.error(t("components.modelView.deleteFailed"));
+  }
+};
+
+// Export selected as CSV
+const handleExportCSV = async (rows: Assistant[]) => {
+  const columns = [
+    { key: "id", label: "ID" },
+    { key: "name", label: "Name" },
+    { key: "status", label: "Status" },
+    { key: "mode", label: "Mode" },
+    { key: "enable_agent", label: "Agent Enabled" },
+    { key: "created_at", label: "Created At" },
+  ];
+  await exportCSV(rows, { filename: `assistants_${Date.now()}.csv`, columns });
+  toast.success(t("admin.export.success"));
+};
+
+// Export single config as JSON
+const handleExportConfig = async (row: Assistant) => {
+  const { exportConfig } = useExport();
+  // Clean up the config for export
+  const config = {
+    name: row.name,
+    description: row.description,
+    mode: row.mode,
+    status: row.status,
+    system_prompt: row.system_prompt,
+    enable_agent: row.enable_agent,
+    enable_memory: row.enable_memory,
+    agent_max_iterations: row.agent_max_iterations,
+    agent_token_budget: row.agent_token_budget,
+    agent_cost_limit: row.agent_cost_limit,
+    agent_reflection_threshold: row.agent_reflection_threshold,
+    generate_follow_up_questions: row.generate_follow_up_questions,
+    // Model reference by ID
+    model_id: row.model_id,
+    // KB IDs if any
+    knowledge_base_ids: row.knowledge_base_ids || [],
+  };
+  await exportConfig(config, { filename: `assistant_${row.name.replace(/\s+/g, "_")}.json` });
+  toast.success(t("admin.export.success"));
+};
+
+// Handle bulk action
+const handleBulkAction = (action: ActionConfig, rows: Assistant[]) => {
+  switch (action.key) {
+    case "activate":
+      bulkUpdateStatus(rows, "ACTIVE");
+      break;
+    case "deactivate":
+      bulkUpdateStatus(rows, "INACTIVE");
+      break;
+    case "exportCSV":
+      handleExportCSV(rows);
+      break;
+    case "delete":
+      bulkDelete(rows);
+      break;
+  }
+};
+
 const handleRowAction = (action: ActionConfig, row: Assistant) => {
   switch (action.key) {
     case "view":
@@ -224,8 +419,14 @@ const handleRowAction = (action: ActionConfig, row: Assistant) => {
     case "edit":
       router.push(`/admin/assistants/${row.id}/edit`);
       break;
+    case "traces":
+      router.push(`/admin/agent-traces?assistant_id=${row.id}`);
+      break;
     case "translations":
       router.push(`/admin/assistants/${row.id}/translations`);
+      break;
+    case "exportConfig":
+      handleExportConfig(row);
       break;
   }
 };
@@ -273,12 +474,12 @@ watch(
       :columns="tableColumns"
       :total-count="totalCount"
       :loading="loading"
-      :selectable="false"
+      :selectable="true"
       :can-create="false"
       :show-filters="true"
       :filters="filterConfig"
       :row-actions="rowActions"
-      :bulk-actions="[]"
+      :bulk-actions="bulkActions"
       :initial-page-size="10"
       :initial-sorting="defaultSorting"
       :empty-message="t('admin.pages.assistants.emptyMessage')"
@@ -288,6 +489,7 @@ watch(
       @sort="handleSort"
       @paginate="handlePaginate"
       @row-action="handleRowAction"
+      @bulk-action="handleBulkAction"
     />
   </div>
 </template>

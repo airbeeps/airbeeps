@@ -13,6 +13,7 @@ const emit = defineEmits<{
   submit: [data: T];
   cancel: [];
   change: [data: Record<string, any>];
+  search: [payload: { fieldName: string; query: string; formData: Record<string, any> }];
 }>();
 
 const { t } = useI18n();
@@ -88,6 +89,7 @@ export interface FormField {
 
   // Select field
   options?: FieldOption[] | ((formData: Record<string, any>) => FieldOption[]);
+  searchable?: boolean;
 
   // File field
   accept?: string;
@@ -217,7 +219,15 @@ const getGroupedOptions = (field: FormField) => {
 
 const shouldShowSearch = (field: FormField): boolean => {
   const options = getOptions(field);
-  return options.length > 10; // Show search if more than 10 options
+  return field.searchable || options.length > 10; // Show search if more than 10 options
+};
+
+const handleSelectSearch = (fieldName: string, value: string | number) => {
+  emit("search", {
+    fieldName,
+    query: String(value ?? ""),
+    formData: deepClone(formData.value),
+  });
 };
 
 // Initialize form data
@@ -681,6 +691,7 @@ defineExpose({
               v-model="selectSearchQueries[field.name]"
               :placeholder="t('components.dynamicForm.searchPlaceholder')"
               class="h-8"
+              @update:model-value="(value) => handleSelectSearch(field.name, value)"
               @click.stop
               @keydown.stop
             />

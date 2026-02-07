@@ -12,12 +12,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "~/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "~/components/ui/tooltip";
-import { RefreshCw, Database, Info } from "lucide-vue-next";
+import { RefreshCw, Database, Info, Workflow, Settings2 } from "lucide-vue-next";
 import { toast } from "vue-sonner";
 import type { KnowledgeBase, RagConfig } from "~/types/api";
+import { KBPipelineBuilder } from "./kb-builder";
 
 const { t } = useI18n();
+
+// View mode: form or visual builder
+const viewMode = ref<"form" | "visual">("form");
 
 interface Props {
   modelValue: {
@@ -230,16 +235,47 @@ onMounted(() => {
 <template>
   <Card>
     <CardHeader>
-      <CardTitle class="flex items-center gap-2">
-        <Database class="h-5 w-5" />
-        {{ t("components.knowledgeBaseConfig.title") }}
-      </CardTitle>
-      <CardDescription>
-        {{ t("components.knowledgeBaseConfig.description") }}
-      </CardDescription>
+      <div class="flex items-center justify-between">
+        <div>
+          <CardTitle class="flex items-center gap-2">
+            <Database class="h-5 w-5" />
+            {{ t("components.knowledgeBaseConfig.title") }}
+          </CardTitle>
+          <CardDescription>
+            {{ t("components.knowledgeBaseConfig.description") }}
+          </CardDescription>
+        </div>
+        <!-- View Mode Tabs -->
+        <Tabs v-model="viewMode" class="w-auto">
+          <TabsList class="grid w-[200px] grid-cols-2">
+            <TabsTrigger value="form" class="flex items-center gap-1">
+              <Settings2 class="h-4 w-4" />
+              Form
+            </TabsTrigger>
+            <TabsTrigger value="visual" class="flex items-center gap-1">
+              <Workflow class="h-4 w-4" />
+              Visual
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
     </CardHeader>
     <CardContent class="space-y-6">
-      <TooltipProvider>
+      <!-- Visual Builder View -->
+      <div v-if="viewMode === 'visual'" class="h-[500px] rounded-lg border">
+        <KBPipelineBuilder
+          :model-value="modelValue"
+          :knowledge-base-name="
+            knowledgeBases.find((kb) => localValue.knowledge_base_ids.includes(kb.id))?.name
+          "
+          :document-count="0"
+          :disabled="disabled"
+          @update:model-value="(v) => emit('update:modelValue', v)"
+        />
+      </div>
+
+      <!-- Form View -->
+      <TooltipProvider v-else>
         <div class="space-y-6">
           <!-- Knowledge base selection -->
           <div class="space-y-3">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ChevronsUpDown, LogOut, CircleUser, Settings } from "lucide-vue-next";
+import { ChevronsUpDown, LogOut, CircleUser, Settings, Shield } from "lucide-vue-next";
 import { useSidebar } from "@/components/ui/sidebar";
 
 const { isMobile } = useSidebar();
@@ -70,6 +70,12 @@ const openSettings = () => {
           <DropdownMenuItem @click="openSettings">
             <Settings />
             {{ $t("nav.settings") }}
+          </DropdownMenuItem>
+          <DropdownMenuItem as-child>
+            <NuxtLink to="/settings/privacy">
+              <Shield />
+              Privacy
+            </NuxtLink>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem @click="handleLogout">

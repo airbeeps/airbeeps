@@ -1,7 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
-import { ArrowLeft, Edit, Trash2, MessageSquare, Copy, Settings, Languages } from "lucide-vue-next";
+import {
+  ArrowLeft,
+  Edit,
+  Trash2,
+  MessageSquare,
+  Copy,
+  Settings,
+  Languages,
+  BarChart3,
+  Clock,
+  Coins,
+  MessagesSquare,
+} from "lucide-vue-next";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "~/components/ui/card";
 import { Badge } from "~/components/ui/badge";
@@ -38,6 +50,16 @@ const assistantId = route.params.id as string;
 const loading = ref(false);
 const deleteLoading = ref(false);
 const assistant = ref<Assistant | null>(null);
+const stats = ref<{
+  total_conversations: number;
+  active_conversations: number;
+  total_messages: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_tokens: number;
+  avg_response_time_ms: number;
+} | null>(null);
+const statsLoading = ref(false);
 
 // Computed properties
 const statusConfig = computed(() => {
@@ -92,6 +114,20 @@ const loadAssistant = async () => {
   }
 };
 
+// Load usage stats
+const loadStats = async () => {
+  statsLoading.value = true;
+  try {
+    const { $api } = useNuxtApp();
+    const response = await $api(`/v1/admin/assistants/${assistantId}/stats`);
+    stats.value = response;
+  } catch (error) {
+    console.error("Failed to load assistant stats:", error);
+  } finally {
+    statsLoading.value = false;
+  }
+};
+
 // Delete assistant
 const deleteAssistant = async () => {
   deleteLoading.value = true;
@@ -132,9 +168,23 @@ const handleChat = () => {
   router.push(`/chatwith/${assistantId}`);
 };
 
+// Format token count
+const formatTokens = (count: number) => {
+  if (count >= 1000000) return (count / 1000000).toFixed(1) + "M";
+  if (count >= 1000) return (count / 1000).toFixed(1) + "K";
+  return count.toString();
+};
+
+// Format response time
+const formatResponseTime = (ms: number) => {
+  if (ms >= 1000) return (ms / 1000).toFixed(2) + "s";
+  return Math.round(ms) + "ms";
+};
+
 // Page initialization
 onMounted(() => {
   loadAssistant();
+  loadStats();
 });
 </script>
 
@@ -379,16 +429,73 @@ onMounted(() => {
           </CardContent>
         </Card>
 
-        <!-- Usage Stats (Reserved) -->
+        <!-- Usage Stats -->
         <Card>
           <CardHeader>
-            <CardTitle class="text-lg">{{
-              t("admin.pages.assistants.detail.usageStats")
-            }}</CardTitle>
+            <CardTitle class="flex items-center gap-2 text-lg">
+              <BarChart3 class="h-5 w-5" />
+              {{ t("admin.pages.assistants.detail.usageStats") }}
+            </CardTitle>
           </CardHeader>
-          <CardContent class="space-y-3 text-sm">
-            <div class="text-muted-foreground py-4 text-center">
-              {{ t("admin.pages.assistants.detail.statsDev") }}
+          <CardContent class="space-y-4">
+            <div v-if="statsLoading" class="text-muted-foreground py-4 text-center">
+              {{ t("common.loading") }}
+            </div>
+            <div v-else-if="stats" class="grid grid-cols-2 gap-4">
+              <!-- Conversations -->
+              <div class="space-y-1">
+                <div class="text-muted-foreground flex items-center gap-2 text-sm">
+                  <MessageSquare class="h-4 w-4" />
+                  {{ t("admin.pages.assistants.detail.stats.conversations") }}
+                </div>
+                <div class="text-2xl font-bold">
+                  {{ stats.total_conversations.toLocaleString() }}
+                </div>
+                <div class="text-muted-foreground text-xs">
+                  {{ stats.active_conversations }}
+                  {{ t("admin.pages.assistants.detail.stats.active") }}
+                </div>
+              </div>
+
+              <!-- Messages -->
+              <div class="space-y-1">
+                <div class="text-muted-foreground flex items-center gap-2 text-sm">
+                  <MessagesSquare class="h-4 w-4" />
+                  {{ t("admin.pages.assistants.detail.stats.messages") }}
+                </div>
+                <div class="text-2xl font-bold">{{ stats.total_messages.toLocaleString() }}</div>
+              </div>
+
+              <!-- Tokens -->
+              <div class="space-y-1">
+                <div class="text-muted-foreground flex items-center gap-2 text-sm">
+                  <Coins class="h-4 w-4" />
+                  {{ t("admin.pages.assistants.detail.stats.tokens") }}
+                </div>
+                <div class="text-2xl font-bold">{{ formatTokens(stats.total_tokens) }}</div>
+                <div class="text-muted-foreground text-xs">
+                  {{ formatTokens(stats.total_input_tokens) }} in /
+                  {{ formatTokens(stats.total_output_tokens) }} out
+                </div>
+              </div>
+
+              <!-- Avg Response Time -->
+              <div class="space-y-1">
+                <div class="text-muted-foreground flex items-center gap-2 text-sm">
+                  <Clock class="h-4 w-4" />
+                  {{ t("admin.pages.assistants.detail.stats.avgResponseTime") }}
+                </div>
+                <div class="text-2xl font-bold">
+                  {{
+                    stats.avg_response_time_ms > 0
+                      ? formatResponseTime(stats.avg_response_time_ms)
+                      : "-"
+                  }}
+                </div>
+              </div>
+            </div>
+            <div v-else class="text-muted-foreground py-4 text-center">
+              {{ t("admin.pages.assistants.detail.stats.noData") }}
             </div>
           </CardContent>
         </Card>

@@ -15,7 +15,8 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { toast } from "vue-sonner";
-import type { KnowledgeBase } from "~/types/api";
+import type { KnowledgeBase, DocumentPreprocessingConfig } from "~/types/api";
+import PreprocessingOptionsPanel from "./PreprocessingOptionsPanel.vue";
 
 const { $api } = useNuxtApp();
 const config = useRuntimeConfig();
@@ -68,6 +69,9 @@ interface IngestionProfile {
 const profiles = ref<IngestionProfile[]>([]);
 const selectedProfileId = ref<string>("");
 const showProfileSelect = ref(false);
+
+// Preprocessing config state
+const preprocessingConfig = ref<DocumentPreprocessingConfig>({});
 
 // Watch props changes
 watch(
@@ -398,6 +402,10 @@ const uploadFiles = async () => {
         if (selectedProfileId.value) {
           formData.append("profile_id", selectedProfileId.value);
         }
+        // Add preprocessing config if any options are set
+        if (Object.keys(preprocessingConfig.value).length > 0) {
+          formData.append("preprocessing_config", JSON.stringify(preprocessingConfig.value));
+        }
 
         // Call new ingestion job endpoint
         const response: any = await $api("/v1/admin/rag/ingestion-jobs/from-upload", {
@@ -542,6 +550,13 @@ onMounted(() => {
           </Select>
         </div>
       </div>
+
+      <!-- Preprocessing Options Panel -->
+      <PreprocessingOptionsPanel
+        v-if="selectedFiles.length > 0"
+        :files="selectedFiles"
+        @update:config="preprocessingConfig = $event"
+      />
     </div>
 
     <!-- Dropzone -->

@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { ArrowUp, Image as ImageIcon, Camera, X, Loader2, AlertTriangle } from "lucide-vue-next";
+import {
+  ArrowUp,
+  Image as ImageIcon,
+  Camera,
+  X,
+  Loader2,
+  AlertTriangle,
+  Globe,
+} from "lucide-vue-next";
 import type { ImageAttachment } from "~/composables/useStreamingChat";
 
 type AttachmentStatus = "uploading" | "ready" | "error";
@@ -17,12 +25,15 @@ interface Props {
   sendDisabled?: boolean;
   supportsVision?: boolean; // Whether the model supports image input
   cameraCapture?: "environment" | "user" | "any";
+  showWebSearchToggle?: boolean; // Whether to show the web search toggle
+  webSearchEnabled?: boolean; // Current state of web search
 }
 
 interface Emits {
   (e: "update:modelValue", value: string): void;
   (e: "send", images?: ImageAttachment[]): void;
   (e: "keydown", event: KeyboardEvent): void;
+  (e: "update:webSearchEnabled", value: boolean): void;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -30,6 +41,8 @@ const props = withDefaults(defineProps<Props>(), {
   sendDisabled: false,
   supportsVision: false,
   cameraCapture: "environment",
+  showWebSearchToggle: false,
+  webSearchEnabled: false,
 });
 
 const emit = defineEmits<Emits>();
@@ -296,6 +309,10 @@ onMounted(() => {
   });
 });
 
+const toggleWebSearch = () => {
+  emit("update:webSearchEnabled", !props.webSearchEnabled);
+};
+
 defineExpose({
   focus: () => textareaRef.value?.focus(),
 });
@@ -347,9 +364,27 @@ defineExpose({
 
       <!-- Main input area -->
       <div class="flex items-end gap-2 p-3">
-        <!-- Left controls (vision buttons) -->
-        <div v-if="supportsVision" class="flex items-center gap-1 pb-0.5">
+        <!-- Left controls (web search + vision buttons) -->
+        <div v-if="showWebSearchToggle || supportsVision" class="flex items-center gap-1 pb-0.5">
+          <!-- Web search toggle -->
           <button
+            v-if="showWebSearchToggle"
+            @click="toggleWebSearch"
+            type="button"
+            :disabled="disabled"
+            class="rounded-lg p-2 transition-colors disabled:opacity-50"
+            :class="[
+              webSearchEnabled
+                ? 'bg-primary/10 text-primary hover:bg-primary/20'
+                : 'hover:bg-muted text-muted-foreground',
+            ]"
+            :title="webSearchEnabled ? t('chat.input.webSearchOn') : t('chat.input.webSearchOff')"
+          >
+            <Globe class="h-5 w-5" />
+          </button>
+          <!-- Vision: upload button -->
+          <button
+            v-if="supportsVision"
             @click="handleFileSelect"
             type="button"
             :disabled="disabled"
@@ -358,7 +393,9 @@ defineExpose({
           >
             <ImageIcon class="text-muted-foreground h-5 w-5" />
           </button>
+          <!-- Vision: camera button -->
           <button
+            v-if="supportsVision"
             @click="handleCameraCapture"
             type="button"
             :disabled="disabled"

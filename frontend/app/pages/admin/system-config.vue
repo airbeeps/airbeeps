@@ -27,9 +27,12 @@ const UI_SHOW_CREATE_KEY = "ui_show_create_button";
 const UI_SHOW_ASSISTANT_DROPDOWN_KEY = "ui_show_assistant_dropdown";
 const UI_SHOW_AGENT_THINKING_KEY = "ui_show_agent_thinking";
 const UI_SHOW_CHAT_SUGGESTIONS_KEY = "ui_show_chat_suggestions";
+const UI_SHOW_MODEL_SELECTOR_KEY = "ui_show_model_selector";
+const UI_SHOW_WEB_SEARCH_TOGGLE_KEY = "ui_show_web_search_toggle";
 const UI_GENERATE_FOLLOWUP_QUESTIONS_KEY = "ui_generate_followup_questions";
 const UI_FOLLOWUP_QUESTION_COUNT_KEY = "ui_followup_question_count";
 const UI_SHOW_SIGNUP_TERMS_KEY = "ui_show_signup_terms";
+const AI_REGISTRY_ALLOW_EXTERNAL_KEY = "ai_registry_allow_external";
 
 const { t } = useI18n();
 
@@ -103,6 +106,12 @@ const showAgentThinkingConfig = computed(() =>
 const showChatSuggestionsConfig = computed(() =>
   configs.value.find((cfg) => cfg.key === UI_SHOW_CHAT_SUGGESTIONS_KEY)
 );
+const showModelSelectorConfig = computed(() =>
+  configs.value.find((cfg) => cfg.key === UI_SHOW_MODEL_SELECTOR_KEY)
+);
+const showWebSearchToggleConfig = computed(() =>
+  configs.value.find((cfg) => cfg.key === UI_SHOW_WEB_SEARCH_TOGGLE_KEY)
+);
 const generateFollowupQuestionsConfig = computed(() =>
   configs.value.find((cfg) => cfg.key === UI_GENERATE_FOLLOWUP_QUESTIONS_KEY)
 );
@@ -111,6 +120,9 @@ const followupQuestionCountConfig = computed(() =>
 );
 const showSignupTermsConfig = computed(() =>
   configs.value.find((cfg) => cfg.key === UI_SHOW_SIGNUP_TERMS_KEY)
+);
+const allowExternalRegistryConfig = computed(() =>
+  configs.value.find((cfg) => cfg.key === AI_REGISTRY_ALLOW_EXTERNAL_KEY)
 );
 
 const showShareButton = ref(true);
@@ -122,9 +134,12 @@ const showCreateButton = ref(true);
 const showAssistantDropdown = ref(true);
 const showAgentThinking = ref(true);
 const showChatSuggestions = ref(true);
+const showModelSelector = ref(true);
+const showWebSearchToggle = ref(true);
 const generateFollowupQuestions = ref(false);
 const followupQuestionCount = ref("3");
 const showSignupTerms = ref(false);
+const allowExternalRegistry = ref(true);
 
 // Unified watcher for all configs
 watch(
@@ -177,6 +192,15 @@ watch(
     showChatSuggestions.value =
       suggestionsCfg === undefined || String(suggestionsCfg.value).toLowerCase() !== "false";
 
+    const modelSelectorCfg = newConfigs.find((cfg) => cfg.key === UI_SHOW_MODEL_SELECTOR_KEY);
+    showModelSelector.value =
+      modelSelectorCfg === undefined || String(modelSelectorCfg.value).toLowerCase() !== "false";
+
+    const webSearchToggleCfg = newConfigs.find((cfg) => cfg.key === UI_SHOW_WEB_SEARCH_TOGGLE_KEY);
+    showWebSearchToggle.value =
+      webSearchToggleCfg === undefined ||
+      String(webSearchToggleCfg.value).toLowerCase() !== "false";
+
     const followupsEnabledCfg = newConfigs.find(
       (cfg) => cfg.key === UI_GENERATE_FOLLOWUP_QUESTIONS_KEY
     );
@@ -196,6 +220,10 @@ watch(
     const signupTermsCfg = newConfigs.find((cfg) => cfg.key === UI_SHOW_SIGNUP_TERMS_KEY);
     showSignupTerms.value =
       signupTermsCfg !== undefined && String(signupTermsCfg.value).toLowerCase() !== "false";
+
+    const registryCfg = newConfigs.find((cfg) => cfg.key === AI_REGISTRY_ALLOW_EXTERNAL_KEY);
+    allowExternalRegistry.value =
+      registryCfg === undefined || String(registryCfg.value).toLowerCase() !== "false";
   },
   { immediate: true }
 );
@@ -384,6 +412,22 @@ const handleSaveShowChatSuggestions = async (value: boolean) =>
     t("admin.systemConfig.ui.showChatSuggestionsDescription")
   );
 
+const handleSaveShowModelSelector = async (value: boolean) =>
+  saveToggleConfig(
+    UI_SHOW_MODEL_SELECTOR_KEY,
+    showModelSelectorConfig,
+    value,
+    t("admin.systemConfig.ui.showModelSelectorDescription")
+  );
+
+const handleSaveShowWebSearchToggle = async (value: boolean) =>
+  saveToggleConfig(
+    UI_SHOW_WEB_SEARCH_TOGGLE_KEY,
+    showWebSearchToggleConfig,
+    value,
+    t("admin.systemConfig.ui.showWebSearchToggleDescription")
+  );
+
 const handleSaveGenerateFollowupQuestions = async (value: boolean) =>
   saveToggleConfig(
     UI_GENERATE_FOLLOWUP_QUESTIONS_KEY,
@@ -410,6 +454,14 @@ const handleSaveShowSignupTerms = async (value: boolean) =>
     showSignupTermsConfig,
     value,
     t("admin.systemConfig.ui.showSignupTermsDescription")
+  );
+
+const handleSaveAllowExternalRegistry = async (value: boolean) =>
+  saveToggleConfig(
+    AI_REGISTRY_ALLOW_EXTERNAL_KEY,
+    allowExternalRegistryConfig,
+    value,
+    t("admin.systemConfig.registry.allowExternalDescription")
   );
 </script>
 
@@ -570,6 +622,28 @@ const handleSaveShowSignupTerms = async (value: boolean) =>
             {{ t("admin.systemConfig.ui.showChatSuggestionsLabel") }}
           </Label>
         </div>
+        <div class="flex items-center space-x-2">
+          <Switch
+            id="ui-show-model-selector"
+            :model-value="showModelSelector"
+            @update:model-value="handleSaveShowModelSelector"
+            :disabled="isSaving"
+          />
+          <Label for="ui-show-model-selector">
+            {{ t("admin.systemConfig.ui.showModelSelectorLabel") }}
+          </Label>
+        </div>
+        <div class="flex items-center space-x-2">
+          <Switch
+            id="ui-show-web-search-toggle"
+            :model-value="showWebSearchToggle"
+            @update:model-value="handleSaveShowWebSearchToggle"
+            :disabled="isSaving"
+          />
+          <Label for="ui-show-web-search-toggle">
+            {{ t("admin.systemConfig.ui.showWebSearchToggleLabel") }}
+          </Label>
+        </div>
 
         <div class="flex items-center space-x-2">
           <Switch
@@ -617,6 +691,28 @@ const handleSaveShowSignupTerms = async (value: boolean) =>
           />
           <Label for="ui-show-signup-terms">
             {{ t("admin.systemConfig.ui.showSignupTermsLabel") }}
+          </Label>
+        </div>
+      </CardContent>
+    </Card>
+
+    <Card>
+      <CardHeader>
+        <CardTitle>{{ t("admin.systemConfig.registry.title") }}</CardTitle>
+        <CardDescription>
+          {{ t("admin.systemConfig.registry.description") }}
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-4">
+        <div class="flex items-center space-x-2">
+          <Switch
+            id="ai-registry-allow-external"
+            :model-value="allowExternalRegistry"
+            @update:model-value="handleSaveAllowExternalRegistry"
+            :disabled="isSaving"
+          />
+          <Label for="ai-registry-allow-external">
+            {{ t("admin.systemConfig.registry.allowExternalLabel") }}
           </Label>
         </div>
       </CardContent>

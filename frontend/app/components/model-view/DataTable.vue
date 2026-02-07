@@ -390,13 +390,68 @@ onMounted(() => {
                   </SelectContent>
                 </Select>
 
-                <div v-else-if="filter.type === 'daterange'" class="flex gap-2">
-                  <Input
-                    type="date"
-                    v-model="filterValues[`${key}_start`]"
-                    @change="applyFilters"
-                  />
-                  <Input type="date" v-model="filterValues[`${key}_end`]" @change="applyFilters" />
+                <div v-else-if="filter.type === 'daterange'" class="space-y-2">
+                  <!-- Date presets -->
+                  <div class="flex flex-wrap gap-1">
+                    <Button
+                      v-for="preset in [
+                        { key: '24h', label: 'Last 24h', hours: 24 },
+                        { key: '7d', label: 'Last 7d', days: 7 },
+                        { key: '30d', label: 'Last 30d', days: 30 },
+                      ]"
+                      :key="preset.key"
+                      variant="outline"
+                      size="sm"
+                      class="h-7 text-xs"
+                      @click="
+                        () => {
+                          const now = new Date();
+                          const start = new Date();
+                          if (preset.hours) {
+                            start.setTime(now.getTime() - preset.hours * 60 * 60 * 1000);
+                          } else if (preset.days) {
+                            start.setDate(now.getDate() - preset.days);
+                          }
+                          filterValues[`${key}_start`] = start.toISOString().split('T')[0];
+                          filterValues[`${key}_end`] = now.toISOString().split('T')[0];
+                          applyFilters();
+                        }
+                      "
+                    >
+                      {{ preset.label }}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      class="h-7 text-xs"
+                      @click="
+                        () => {
+                          filterValues[`${key}_start`] = '';
+                          filterValues[`${key}_end`] = '';
+                          applyFilters();
+                        }
+                      "
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                  <!-- Custom date inputs -->
+                  <div class="flex gap-2">
+                    <Input
+                      type="date"
+                      v-model="filterValues[`${key}_start`]"
+                      @change="applyFilters"
+                      class="text-sm"
+                      placeholder="From"
+                    />
+                    <Input
+                      type="date"
+                      v-model="filterValues[`${key}_end`]"
+                      @change="applyFilters"
+                      class="text-sm"
+                      placeholder="To"
+                    />
+                  </div>
                 </div>
               </div>
             </div>

@@ -55,6 +55,12 @@ export interface ModelViewConfig<T> {
     setValues?: (values: Record<string, any>) => void;
     getValues?: () => Record<string, any>;
   }) => void;
+  onFormSearch?: (ctx: {
+    fieldName: string;
+    query: string;
+    formData: Record<string, any>;
+    mode: "create" | "edit";
+  }) => void;
 
   // Detail config
   detailFields?: DetailField[];
@@ -158,6 +164,18 @@ const detailRenderValues = computed<Record<string, any>>(() => {
 const title = computed(() => props.config.title);
 const description = computed(() => props.config.description);
 const formDescription = computed(() => props.config.formDescription);
+
+const handleFormSearch = (payload: {
+  fieldName: string;
+  query: string;
+  formData: Record<string, any>;
+}) => {
+  if (!props.config.onFormSearch) return;
+  props.config.onFormSearch({
+    ...payload,
+    mode: formMode.value,
+  });
+};
 
 const deleteMessage = computed(() => {
   if (itemsToDelete.value.length === 1) {
@@ -549,6 +567,7 @@ watch(
           "
           @submit="(data: any) => handleFormSubmit(data)"
           @change="(data: any) => handleFormChange(data)"
+          @search="(payload: any) => handleFormSearch(payload)"
           @cancel="closeFormDialog"
         />
       </DialogContent>

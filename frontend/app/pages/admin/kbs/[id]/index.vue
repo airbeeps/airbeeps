@@ -4,6 +4,13 @@ import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Progress } from "~/components/ui/progress";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu";
+import {
   FileText,
   Upload,
   Trash2,
@@ -24,6 +31,12 @@ import {
   Cpu,
   FileStack,
   AlertTriangle,
+  Heart,
+  Copy,
+  ArrowRightLeft,
+  MoreVertical,
+  Activity,
+  Sparkles,
 } from "lucide-vue-next";
 import type { ColumnDef, SortingState, PaginationState } from "@tanstack/vue-table";
 import type { ActionConfig } from "~/components/model-view/DataTable.vue";
@@ -96,6 +109,42 @@ const chunks = ref<any[]>([]);
 const chunksTotal = ref(0);
 const chunksPage = ref(1);
 const chunksPageSize = ref(50);
+const chunkSearchQuery = ref("");
+
+// Health metrics state
+interface KBHealthMetrics {
+  total_documents: number;
+  active_documents: number;
+  failed_documents: number;
+  indexing_documents: number;
+  total_chunks: number;
+  avg_chunks_per_document: number;
+  total_tokens: number;
+  avg_tokens_per_chunk: number;
+  duplicate_document_count: number;
+  unique_file_hashes: number;
+  oldest_document_days: number | null;
+  newest_document_days: number | null;
+  avg_document_age_days: number | null;
+  avg_chunk_length: number;
+  min_chunk_length: number;
+  max_chunk_length: number;
+  vector_collection_exists: boolean;
+  estimated_vector_count: number | null;
+  health_score: number;
+  issues: string[];
+}
+
+const healthMetrics = ref<KBHealthMetrics | null>(null);
+const healthLoading = ref(false);
+const showHealthPanel = ref(false);
+
+// Bulk operations state
+const showMoveDialog = ref(false);
+const moveTargetKbId = ref("");
+const moveLoading = ref(false);
+const availableKbs = ref<KnowledgeBase[]>([]);
+const selectedDocIds = ref<string[]>([]);
 
 // =====================================================
 // Real-time Ingestion Jobs with SSE
@@ -283,6 +332,12 @@ const getStatusColor = (status: string): string => {
   }
 };
 
+// Copy KB ID to clipboard
+const copyKbId = () => {
+  navigator.clipboard.writeText(kbId);
+  toast.success(t("common.copied") || "Copied to clipboard");
+};
+
 // Load knowledge base info
 const loadKnowledgeBase = async () => {
   loading.value = true;
@@ -313,6 +368,112 @@ const handleReindex = async () => {
     reindexLoading.value = false;
   }
 };
+
+// Load health metrics
+const loadHealthMetrics = async () => {
+  healthLoading.value = true;
+  try {
+    const response = (await $api(
+      `/v1/admin/rag/knowledge-bases/${kbId}/health`
+    )) as KBHealthMetrics;
+    healthMetrics.value = response;
+  } catch (error) {
+    console.error("Failed to load health metrics:", error);
+  } finally {
+    healthLoading.value = false;
+  }
+};
+
+// Bulk reindex selected documents
+const handleBulkReindex = async (docIds: string[]) => {
+  if (!docIds.length) return;
+  try {
+    const response: any = await $api(
+      `/v1/admin/rag/knowledge-bases/${kbId}/documents/bulk-reindex`,
+      {
+        method: "POST",
+        body: { document_ids: docIds },
+      }
+    );
+    toast.success(`Reindexed ${response.reindexed_count} documents`);
+    await loadData();
+  } catch (error) {
+    toast.error("Failed to reindex documents");
+  }
+};
+
+// Detect duplicates
+const handleDetectDuplicates = async () => {
+  try {
+    const response: any = await $api(`/v1/admin/rag/knowledge-bases/${kbId}/duplicates`);
+    if (response.length === 0) {
+      toast.info("No duplicate documents found");
+    } else {
+      const totalDups = response.reduce((sum: number, d: any) => sum + d.duplicate_count, 0);
+      toast.warning(`Found ${totalDups} duplicate(s) across ${response.length} documents`);
+    }
+  } catch (error) {
+    toast.error("Failed to detect duplicates");
+  }
+};
+
+// Remove duplicates
+const handleRemoveDuplicates = async () => {
+  try {
+    const response: any = await $api(`/v1/admin/rag/knowledge-bases/${kbId}/deduplicate`, {
+      method: "POST",
+    });
+    toast.success(response.message || `Removed ${response.removed_count} duplicates`);
+    await loadData();
+    await loadHealthMetrics();
+  } catch (error) {
+    toast.error("Failed to remove duplicates");
+  }
+};
+
+// Load available KBs for move operation
+const loadAvailableKbs = async () => {
+  try {
+    const response = (await $api("/v1/admin/rag/knowledge-bases/all")) as KnowledgeBase[];
+    availableKbs.value = response.filter((kb) => kb.id !== kbId);
+  } catch (error) {
+    console.error("Failed to load KBs:", error);
+  }
+};
+
+// Move documents to another KB
+const handleMoveDocuments = async () => {
+  if (!selectedDocIds.value.length || !moveTargetKbId.value) return;
+  moveLoading.value = true;
+  try {
+    const response: any = await $api(`/v1/admin/rag/knowledge-bases/${kbId}/documents/move`, {
+      method: "POST",
+      body: {
+        document_ids: selectedDocIds.value,
+        target_kb_id: moveTargetKbId.value,
+      },
+    });
+    toast.success(`Moved ${response.moved_count} documents`);
+    showMoveDialog.value = false;
+    moveTargetKbId.value = "";
+    selectedDocIds.value = [];
+    await loadData();
+  } catch (error) {
+    toast.error("Failed to move documents");
+  } finally {
+    moveLoading.value = false;
+  }
+};
+
+// Health score color
+const healthScoreColor = computed(() => {
+  if (!healthMetrics.value) return "text-muted-foreground";
+  const score = healthMetrics.value.health_score;
+  if (score >= 80) return "text-green-600";
+  if (score >= 60) return "text-yellow-600";
+  if (score >= 40) return "text-orange-600";
+  return "text-red-600";
+});
 
 // Initialize API
 const api = useModelViewAPI<Document>(`/v1/admin/rag/knowledge-bases/${kbId}/documents`, {
@@ -463,6 +624,16 @@ const rowActions: ActionConfig[] = [
 
 const bulkActions: ActionConfig[] = [
   {
+    key: "bulk-reindex",
+    label: "Reindex Selected",
+    icon: RefreshCw,
+  },
+  {
+    key: "bulk-move",
+    label: "Move to KB...",
+    icon: ArrowRightLeft,
+  },
+  {
     key: "bulk-delete",
     label: t("common.delete") || "Delete",
     icon: Trash2,
@@ -504,9 +675,10 @@ const handleDocumentAction = (action: ActionConfig, row: Document) => {
 };
 
 const handleBulkAction = async (action: ActionConfig, rows: Document[]) => {
+  const ids = rows.map((r) => r.id);
+
   if (action.key === "bulk-delete") {
     try {
-      const ids = rows.map((r) => r.id);
       await $api(`/v1/admin/rag/knowledge-bases/${kbId}/documents`, {
         method: "DELETE",
         body: { ids },
@@ -517,6 +689,12 @@ const handleBulkAction = async (action: ActionConfig, rows: Document[]) => {
     } catch (error) {
       toast.error(t("admin.pages.knowledgeBases.detail.deleteConfirm.failed"));
     }
+  } else if (action.key === "bulk-reindex") {
+    await handleBulkReindex(ids);
+  } else if (action.key === "bulk-move") {
+    selectedDocIds.value = ids;
+    await loadAvailableKbs();
+    showMoveDialog.value = true;
   }
 };
 
@@ -621,7 +799,7 @@ const goToNextPage = () => {
 
 // Lifecycle
 onMounted(async () => {
-  await Promise.all([loadKnowledgeBase(), loadData(), loadIngestionJobs()]);
+  await Promise.all([loadKnowledgeBase(), loadData(), loadIngestionJobs(), loadHealthMetrics()]);
 });
 </script>
 
@@ -661,6 +839,14 @@ onMounted(async () => {
                 <FileStack class="h-3 w-3" />
                 {{ totalCount }} docs
               </span>
+              <button
+                class="hover:text-foreground flex items-center gap-1 transition-colors"
+                @click="copyKbId"
+                title="Copy KB ID"
+              >
+                <Copy class="h-3 w-3" />
+                <span class="font-mono">{{ kbId.slice(0, 8) }}...</span>
+              </button>
             </div>
           </div>
         </div>
@@ -686,10 +872,44 @@ onMounted(async () => {
             </span>
           </Button>
 
-          <Button variant="outline" size="sm" @click="router.push(`/admin/kbs/${kbId}/profiles`)">
-            <Settings2 class="mr-2 h-4 w-4" />
-            Profiles
+          <!-- Health Button -->
+          <Button
+            variant="outline"
+            size="sm"
+            @click="showHealthPanel = !showHealthPanel"
+            :class="{ 'border-primary': showHealthPanel }"
+          >
+            <Heart class="mr-2 h-4 w-4" :class="healthScoreColor" />
+            {{ healthMetrics?.health_score || "..." }}%
           </Button>
+
+          <!-- Operations Menu -->
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm">
+                <MoreVertical class="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem @click="router.push(`/admin/kbs/${kbId}/profiles`)">
+                <Settings2 class="mr-2 h-4 w-4" />
+                Ingestion Profiles
+              </DropdownMenuItem>
+              <DropdownMenuItem @click="handleDetectDuplicates">
+                <Copy class="mr-2 h-4 w-4" />
+                Detect Duplicates
+              </DropdownMenuItem>
+              <DropdownMenuItem @click="handleRemoveDuplicates">
+                <Sparkles class="mr-2 h-4 w-4" />
+                Remove Duplicates
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem @click="loadHealthMetrics" :disabled="healthLoading">
+                <Activity class="mr-2 h-4 w-4" />
+                Refresh Health
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           <Button
             v-if="knowledgeBase?.reindex_required"
@@ -706,6 +926,110 @@ onMounted(async () => {
             <Upload class="mr-2 h-4 w-4" />
             Upload
           </Button>
+        </div>
+      </div>
+
+      <!-- Health Metrics Panel -->
+      <div v-if="showHealthPanel && healthMetrics" class="bg-card mt-3 rounded-lg border p-4">
+        <div class="mb-3 flex items-center justify-between">
+          <h3 class="flex items-center gap-2 font-medium">
+            <Heart class="h-4 w-4" :class="healthScoreColor" />
+            KB Health Score: {{ healthMetrics.health_score }}%
+          </h3>
+          <Button variant="ghost" size="sm" @click="loadHealthMetrics" :disabled="healthLoading">
+            <RefreshCw class="h-4 w-4" :class="{ 'animate-spin': healthLoading }" />
+          </Button>
+        </div>
+
+        <!-- Issues -->
+        <div
+          v-if="healthMetrics.issues.length > 0"
+          class="bg-destructive/10 border-destructive/20 mb-4 rounded-md border p-3"
+        >
+          <div class="text-destructive mb-1 text-sm font-medium">Issues Detected</div>
+          <ul class="text-destructive/90 space-y-1 text-sm">
+            <li v-for="issue in healthMetrics.issues" :key="issue" class="flex items-start gap-2">
+              <AlertTriangle class="mt-0.5 h-3 w-3 shrink-0" />
+              {{ issue }}
+            </li>
+          </ul>
+        </div>
+
+        <!-- Metrics Grid -->
+        <div class="grid grid-cols-2 gap-4 text-sm md:grid-cols-4">
+          <div class="space-y-1">
+            <div class="text-muted-foreground">Documents</div>
+            <div class="font-medium">{{ healthMetrics.active_documents }} active</div>
+            <div class="text-muted-foreground text-xs">
+              {{ healthMetrics.failed_documents }} failed,
+              {{ healthMetrics.indexing_documents }} indexing
+            </div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-muted-foreground">Chunks</div>
+            <div class="font-medium">{{ healthMetrics.total_chunks.toLocaleString() }}</div>
+            <div class="text-muted-foreground text-xs">
+              ~{{ healthMetrics.avg_chunks_per_document.toFixed(1) }}/doc
+            </div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-muted-foreground">Tokens</div>
+            <div class="font-medium">{{ healthMetrics.total_tokens.toLocaleString() }}</div>
+            <div class="text-muted-foreground text-xs">
+              ~{{ healthMetrics.avg_tokens_per_chunk.toFixed(0) }}/chunk
+            </div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-muted-foreground">Duplicates</div>
+            <div
+              class="font-medium"
+              :class="healthMetrics.duplicate_document_count > 0 ? 'text-orange-600' : ''"
+            >
+              {{ healthMetrics.duplicate_document_count }}
+            </div>
+            <div class="text-muted-foreground text-xs">
+              {{ healthMetrics.unique_file_hashes }} unique files
+            </div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-muted-foreground">Oldest Doc</div>
+            <div class="font-medium">
+              {{
+                healthMetrics.oldest_document_days != null
+                  ? `${healthMetrics.oldest_document_days}d ago`
+                  : "N/A"
+              }}
+            </div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-muted-foreground">Newest Doc</div>
+            <div class="font-medium">
+              {{
+                healthMetrics.newest_document_days != null
+                  ? `${healthMetrics.newest_document_days}d ago`
+                  : "N/A"
+              }}
+            </div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-muted-foreground">Chunk Length</div>
+            <div class="font-medium">{{ healthMetrics.avg_chunk_length.toFixed(0) }} avg</div>
+            <div class="text-muted-foreground text-xs">
+              {{ healthMetrics.min_chunk_length }}-{{ healthMetrics.max_chunk_length }}
+            </div>
+          </div>
+          <div class="space-y-1">
+            <div class="text-muted-foreground">Vector Store</div>
+            <div
+              class="font-medium"
+              :class="healthMetrics.vector_collection_exists ? 'text-green-600' : 'text-red-600'"
+            >
+              {{ healthMetrics.vector_collection_exists ? "OK" : "Missing" }}
+            </div>
+            <div class="text-muted-foreground text-xs">
+              {{ healthMetrics.estimated_vector_count?.toLocaleString() || "?" }} vectors
+            </div>
+          </div>
         </div>
       </div>
 
@@ -948,6 +1272,45 @@ onMounted(async () => {
               </Button>
             </div>
           </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Move Documents Dialog -->
+    <Dialog :open="showMoveDialog" @update:open="showMoveDialog = $event">
+      <DialogContent class="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Move Documents</DialogTitle>
+          <DialogDescription>
+            Move {{ selectedDocIds.length }} selected document(s) to another knowledge base.
+            Documents will be re-embedded using the target KB's embedding model.
+          </DialogDescription>
+        </DialogHeader>
+        <div class="space-y-4 py-4">
+          <div class="space-y-2">
+            <label class="text-sm font-medium">Target Knowledge Base</label>
+            <select
+              v-model="moveTargetKbId"
+              class="border-input bg-background w-full rounded-md border px-3 py-2 text-sm"
+            >
+              <option value="">Select a knowledge base...</option>
+              <option v-for="kb in availableKbs" :key="kb.id" :value="kb.id">
+                {{ kb.name }}
+              </option>
+            </select>
+          </div>
+          <div class="text-muted-foreground text-sm">
+            <AlertTriangle class="mr-1 inline-block h-4 w-4 text-orange-500" />
+            This operation will delete vectors from the current KB and create new ones in the target
+            KB.
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="showMoveDialog = false">Cancel</Button>
+          <Button @click="handleMoveDocuments" :disabled="!moveTargetKbId || moveLoading">
+            <Loader2 v-if="moveLoading" class="mr-2 h-4 w-4 animate-spin" />
+            Move Documents
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

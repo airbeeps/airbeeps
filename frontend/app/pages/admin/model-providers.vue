@@ -30,10 +30,11 @@ type ProvidersByCategory = {
   LOCAL: ProviderTemplate[];
 };
 
-const { data: providersByCategory } = useAPI<ProvidersByCategory>(
+const { data: providersByCategory, pending: loadingTemplates } = useAPI<ProvidersByCategory>(
   "/v1/admin/litellm-providers/by-category",
   {
     server: false,
+    lazy: true,
   }
 );
 
@@ -469,5 +470,14 @@ const providerConfig = computed(
 </script>
 
 <template>
-  <ModelView :config="providerConfig" @row-action="handleProviderRowAction" />
+  <!-- Show loading spinner while templates are loading -->
+  <div v-if="loadingTemplates" class="flex h-[60vh] items-center justify-center">
+    <div class="flex flex-col items-center gap-4">
+      <div class="border-primary h-12 w-12 animate-spin rounded-full border-b-2"></div>
+      <p class="text-muted-foreground text-sm">Loading provider templates...</p>
+    </div>
+  </div>
+
+  <!-- Show ModelView once templates are loaded -->
+  <ModelView v-else :config="providerConfig" @row-action="handleProviderRowAction" />
 </template>

@@ -17,6 +17,8 @@ const emit = defineEmits(["select-suggestion"]);
 
 const configStore = useConfigStore();
 const showSuggestions = computed(() => {
+  // Security: Hide suggestions until config is loaded to respect admin settings
+  if (!configStore.isLoaded) return false;
   // Don't show generic suggestions for RAG assistants
   if (props.assistant?.mode === "RAG") {
     return false;

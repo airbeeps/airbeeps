@@ -99,9 +99,25 @@ const userConfig = computed(
         header: t("admin.pages.users.roles"),
         cell: (ctx) => {
           const isSuperuser = ctx.getValue() as boolean;
+          const role = ctx.row.original.role as string | null;
+
           if (isSuperuser) {
-            return h(Badge, { variant: "destructive" }, () => t("admin.pages.users.admin"));
+            return h(Badge, { variant: "destructive" }, () => t("admin.roles.superuser"));
           }
+
+          if (role) {
+            const roleConfig: Record<
+              string,
+              { variant: "default" | "secondary" | "outline"; label: string }
+            > = {
+              admin: { variant: "default", label: t("admin.roles.admin") },
+              editor: { variant: "secondary", label: t("admin.roles.editor") },
+              viewer: { variant: "outline", label: t("admin.roles.viewer") },
+            };
+            const config = roleConfig[role] || { variant: "outline", label: role };
+            return h(Badge, { variant: config.variant }, () => config.label);
+          }
+
           return h("span", { class: "text-muted-foreground" }, t("admin.pages.users.user"));
         },
       },
@@ -143,6 +159,16 @@ const userConfig = computed(
         label: t("admin.pages.users.isAdmin"),
         type: "switch",
       },
+      {
+        name: "role",
+        label: t("admin.pages.users.role"),
+        type: "select",
+        options: [
+          { label: t("admin.roles.viewer"), value: "viewer" },
+          { label: t("admin.roles.editor"), value: "editor" },
+          { label: t("admin.roles.admin"), value: "admin" },
+        ],
+      },
     ],
 
     filters: {
@@ -170,6 +196,15 @@ const userConfig = computed(
           { label: t("admin.pages.users.notAdmin"), value: "false" },
         ],
       },
+      role: {
+        type: "select",
+        label: t("admin.pages.users.filterRole"),
+        options: [
+          { label: t("admin.roles.admin"), value: "admin" },
+          { label: t("admin.roles.editor"), value: "editor" },
+          { label: t("admin.roles.viewer"), value: "viewer" },
+        ],
+      },
     },
 
     detailFields: [
@@ -191,6 +226,11 @@ const userConfig = computed(
         name: "is_superuser",
         label: t("admin.pages.users.isAdmin"),
         type: "boolean",
+      },
+      {
+        name: "role",
+        label: t("admin.pages.users.role"),
+        type: "text",
       },
       {
         name: "created_at",

@@ -2,7 +2,18 @@
 import { nextTick, onMounted, onUnmounted, watch } from "vue";
 import { useMarkdown } from "~/composables/useMarkdown";
 import { useConfigStore } from "~/stores/config";
-import { Copy, Share, Check, Quote, ThumbsUp, ThumbsDown, Loader2, Info } from "lucide-vue-next";
+import {
+  Copy,
+  Share,
+  Check,
+  Quote,
+  ThumbsUp,
+  ThumbsDown,
+  Loader2,
+  Info,
+  Pencil,
+  X,
+} from "lucide-vue-next";
 import type { Assistant, Message } from "~/types/api";
 import {
   Dialog,
@@ -32,6 +43,8 @@ const emit = defineEmits<{
   (e: "share", message: Message): void;
   (e: "quote", content: string): void;
   (e: "followup", content: string): void;
+  (e: "edit", messageId: string, newContent: string): void;
+  (e: "regenerate", messageId: string): void;
 }>();
 
 // Use markdown composable
@@ -48,6 +61,36 @@ const feedbackReasons = ref<string[]>([]);
 const feedbackComment = ref("");
 const feedbackSubmitting = ref(false);
 const feedbackSubmittedRating = ref<FeedbackRating | null>(null);
+
+// Message editing state
+const isEditing = ref(false);
+const editContent = ref("");
+const editSaving = ref(false);
+
+const startEdit = () => {
+  editContent.value = props.message.content;
+  isEditing.value = true;
+};
+
+const cancelEdit = () => {
+  isEditing.value = false;
+  editContent.value = "";
+};
+
+const saveEdit = () => {
+  if (editSaving.value) return;
+  const trimmed = editContent.value.trim();
+  if (!trimmed || trimmed === props.message.content) {
+    cancelEdit();
+    return;
+  }
+  emit("edit", props.message.id, trimmed);
+  isEditing.value = false;
+  editContent.value = "";
+};
+
+// Check if message was edited
+const wasEdited = computed(() => !!props.message.edited_at);
 
 const statsDialogOpen = ref(false);
 
@@ -66,13 +109,18 @@ const messageStats = computed(() => {
 });
 
 const configStore = useConfigStore();
-const showAgentThinking = computed(() => configStore.config.ui_show_agent_thinking !== false);
-const showMessageFeedbackButtons = computed(
-  () => configStore.config.ui_show_message_feedback_buttons !== false
+// Security: Hide toggles until config is loaded to respect admin settings
+const showAgentThinking = computed(
+  () => configStore.isLoaded && configStore.config.ui_show_agent_thinking !== false
 );
-const showMessageStats = computed(() => configStore.config.ui_show_message_stats !== false);
+const showMessageFeedbackButtons = computed(
+  () => configStore.isLoaded && configStore.config.ui_show_message_feedback_buttons !== false
+);
+const showMessageStats = computed(
+  () => configStore.isLoaded && configStore.config.ui_show_message_stats !== false
+);
 const showFollowupsGlobally = computed(
-  () => configStore.config.ui_generate_followup_questions !== false
+  () => configStore.isLoaded && configStore.config.ui_generate_followup_questions !== false
 );
 const followupMaxCount = computed(() => {
   const raw = configStore.config.ui_followup_question_count;
@@ -93,6 +141,9 @@ const FEEDBACK_REASONS_DOWN = [
   "Citations missing/wrong",
   "Other",
 ];
+
+// Max characters allowed for feedback comment
+const FEEDBACK_COMMENT_MAX_CHARS = 500;
 
 const availableFeedbackReasons = computed(() =>
   feedbackRating.value === "UP" ? FEEDBACK_REASONS_UP : FEEDBACK_REASONS_DOWN
@@ -508,9 +559,40 @@ const previewCitation = async (citation: any) => {
     return;
   }
 
-  // Handle other document types (DOCX, PPTX, TXT, MD) - show text snippet
-  const textBasedTypes = ["docx", "doc", "pptx", "ppt", "txt", "md", "html"];
+  // Handle other document types (DOCX, PPTX, TXT, MD, HTML) - use chunk preview or snippet
+  const textBasedTypes = ["docx", "doc", "pptx", "ppt", "txt", "md", "html", "json", "xml"];
   if (fileType && textBasedTypes.includes(String(fileType).toLowerCase())) {
+    // Try to fetch full chunk content if chunk_id is available
+    const chunkId = citation.chunk_id || citation.metadata?.chunk_id;
+    if (chunkId) {
+      try {
+        previewLoading.value = true;
+        const data = await $api(`/v1/rag/chunks/${chunkId}/preview`);
+        previewData.value = {
+          type: "chunk",
+          title: data.document_title || citation.display_name || citation.title || "Source Content",
+          content: data.content,
+          metadata: {
+            file_type: data.file_type || fileType,
+            document_id: data.document_id,
+            chunk_id: data.chunk_id,
+            chunk_index: data.chunk_index,
+            page_number: data.page_number,
+            sheet: data.sheet,
+            row_number: data.row_number,
+            score: citation.score,
+          },
+        };
+        previewOpen.value = true;
+        return;
+      } catch {
+        // Fall through to snippet fallback
+      } finally {
+        previewLoading.value = false;
+      }
+    }
+
+    // Fallback: show snippet if available
     if (citation.snippet) {
       previewData.value = {
         type: "text",
@@ -535,8 +617,38 @@ const previewCitation = async (citation: any) => {
     return;
   }
 
-  // Non-Excel fallback: show snippet in modal or open URL
+  // Non-Excel fallback: use chunk preview, snippet, or open URL
   if (!fileType || !["xls", "xlsx", "csv", "excel"].includes(String(fileType).toLowerCase())) {
+    // Try to fetch full chunk content if chunk_id is available
+    const chunkId = citation.chunk_id || citation.metadata?.chunk_id;
+    if (chunkId) {
+      try {
+        previewLoading.value = true;
+        const data = await $api(`/v1/rag/chunks/${chunkId}/preview`);
+        previewData.value = {
+          type: "chunk",
+          title: data.document_title || citation.display_name || citation.title || "Source Content",
+          content: data.content,
+          metadata: {
+            file_type: data.file_type || fileType,
+            document_id: data.document_id,
+            chunk_id: data.chunk_id,
+            chunk_index: data.chunk_index,
+            page_number: data.page_number,
+            sheet: data.sheet,
+            row_number: data.row_number,
+            score: citation.score,
+          },
+        };
+        previewOpen.value = true;
+        return;
+      } catch {
+        // Fall through to snippet fallback
+      } finally {
+        previewLoading.value = false;
+      }
+    }
+
     // Prefer showing snippet in modal (consistent UX like NotebookLM)
     if (citation.snippet) {
       previewData.value = {
@@ -801,7 +913,31 @@ watch(
           class="mb-1"
         />
 
+        <!-- Edit mode for user messages -->
+        <div v-if="isEditing && message.message_type === 'USER'" class="space-y-3">
+          <Textarea
+            v-model="editContent"
+            class="min-h-[100px] w-full resize-none border-0 bg-transparent p-0 text-base focus:ring-0"
+            :placeholder="t('chat.editPlaceholder')"
+            @keydown.escape="cancelEdit"
+            @keydown.meta.enter="saveEdit"
+            @keydown.ctrl.enter="saveEdit"
+          />
+          <div class="flex items-center justify-end gap-2">
+            <Button variant="ghost" size="sm" @click="cancelEdit" :disabled="editSaving">
+              <X class="mr-1 h-3.5 w-3.5" />
+              {{ t("common.cancel") }}
+            </Button>
+            <Button size="sm" @click="saveEdit" :disabled="editSaving || !editContent.trim()">
+              <Loader2 v-if="editSaving" class="mr-1 h-3.5 w-3.5 animate-spin" />
+              {{ t("chat.saveAndRegenerate") }}
+            </Button>
+          </div>
+        </div>
+
+        <!-- Normal content display -->
         <article
+          v-else
           class="markdown-content prose prose-zinc dark:prose-invert prose-p:leading-7 prose-p:my-3 prose-headings:mt-6 prose-headings:mb-3 prose-li:my-1 prose-ul:my-3 prose-ol:my-3 prose-pre:my-0 prose-pre:bg-transparent prose-code:before:content-none prose-code:after:content-none prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-md prose-code:text-[0.9em] prose-code:font-normal max-w-none"
           v-html="renderedContent"
           @click="handleMarkdownClick"
@@ -842,6 +978,7 @@ watch(
                 >[{{ citation.index || idx + 1 }}]
                 {{ citation.display_name || citation.title || "Source" }}</span
               >
+              <!-- Excel/CSV: Sheet and Row info -->
               <span
                 v-if="
                   citation.sheet ||
@@ -854,6 +991,49 @@ watch(
                 {{ citation.sheet || citation.metadata?.sheet || "Sheet" }} · Row
                 {{ citation.row_number || citation.metadata?.row_number || "?" }}
               </span>
+              <!-- PDF/Document: Page number -->
+              <span
+                v-else-if="
+                  citation.page_number ||
+                  citation.metadata?.page_number ||
+                  citation.metadata?.page_start
+                "
+                class="text-muted-foreground flex items-center gap-1"
+              >
+                <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"
+                  />
+                </svg>
+                Page
+                {{
+                  citation.page_number ||
+                  citation.metadata?.page_number ||
+                  citation.metadata?.page_start
+                }}
+                <span
+                  v-if="
+                    citation.metadata?.page_end &&
+                    citation.metadata?.page_end !==
+                      (citation.page_number ||
+                        citation.metadata?.page_number ||
+                        citation.metadata?.page_start)
+                  "
+                >
+                  - {{ citation.metadata.page_end }}
+                </span>
+                <!-- Section info if available -->
+                <span
+                  v-if="citation.section || citation.metadata?.section"
+                  class="ml-1 border-l border-current/30 pl-1"
+                >
+                  {{ citation.section || citation.metadata?.section }}
+                </span>
+              </span>
+              <!-- Fallback: snippet preview -->
               <span
                 v-else-if="citation.snippet"
                 class="text-muted-foreground max-w-[220px] truncate"
@@ -861,6 +1041,7 @@ watch(
               >
                 {{ citation.snippet }}
               </span>
+              <!-- Fallback: URL -->
               <span
                 v-else-if="citation.source_url || citation.url"
                 class="text-muted-foreground max-w-[220px] truncate"
@@ -892,11 +1073,32 @@ watch(
         </div>
       </div>
 
-      <!-- Copy for user question (outside bubble, right aligned) -->
+      <!-- Toolbar for user message (outside bubble, right aligned) -->
       <div
         v-if="!isStreamingMessage && message.message_type === 'USER'"
-        class="mt-1.5 flex justify-end"
+        class="mt-1.5 flex items-center justify-end gap-1"
       >
+        <!-- Edited indicator -->
+        <span
+          v-if="wasEdited"
+          class="text-muted-foreground/60 mr-1 text-xs"
+          :title="message.edited_at ? new Date(message.edited_at).toLocaleString() : ''"
+        >
+          {{ t("chat.edited") }}
+        </span>
+
+        <!-- Edit button -->
+        <Button
+          @click="startEdit"
+          class="text-muted-foreground/60 hover:text-foreground hover:bg-muted/50 h-7 w-7 rounded-lg p-0 transition-all"
+          :title="t('chat.editMessage')"
+          variant="ghost"
+          :disabled="isEditing"
+        >
+          <Pencil class="h-3.5 w-3.5" />
+        </Button>
+
+        <!-- Copy button -->
         <Button
           @click="copyMessage"
           class="text-muted-foreground/60 hover:text-foreground hover:bg-muted/50 h-7 w-7 rounded-lg p-0 transition-all"
@@ -1014,12 +1216,18 @@ watch(
         </div>
 
         <div class="space-y-2">
-          <div class="text-sm font-medium">
-            {{ t("chat.feedback.detailsLabel") }}
+          <div class="flex items-center justify-between">
+            <div class="text-sm font-medium">
+              {{ t("chat.feedback.detailsLabel") }}
+            </div>
+            <div class="text-muted-foreground text-xs">
+              {{ feedbackComment.length }} / {{ FEEDBACK_COMMENT_MAX_CHARS }}
+            </div>
           </div>
           <Textarea
             v-model="feedbackComment"
             :placeholder="t('chat.feedback.detailsPlaceholder')"
+            :maxlength="FEEDBACK_COMMENT_MAX_CHARS"
             class="min-h-[120px]"
           />
           <div class="text-muted-foreground text-xs">
@@ -1102,7 +1310,7 @@ watch(
           {{
             previewData?.type === "pdf-page"
               ? previewData?.title || "PDF Source"
-              : previewData?.type === "text"
+              : previewData?.type === "text" || previewData?.type === "chunk"
                 ? previewData?.title || "Source Content"
                 : "Row preview"
           }}
@@ -1167,6 +1375,54 @@ watch(
                   {{ previewData.snippet }}
                 </p>
               </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- Chunk preview (full content from chunk endpoint) -->
+        <template v-else-if="previewData.type === 'chunk'">
+          <div class="max-h-[70vh] space-y-3 overflow-y-auto">
+            <div
+              v-if="previewData.metadata"
+              class="text-muted-foreground flex flex-wrap items-center gap-2 text-xs"
+            >
+              <span
+                v-if="previewData.metadata.file_type"
+                class="bg-secondary rounded-full px-2 py-0.5 font-medium uppercase"
+              >
+                {{ previewData.metadata.file_type }}
+              </span>
+              <span
+                v-if="previewData.metadata.page_number"
+                class="bg-primary/10 text-primary rounded-full px-2 py-0.5 font-medium"
+              >
+                Page {{ previewData.metadata.page_number }}
+              </span>
+              <span v-if="previewData.metadata.sheet" class="flex items-center gap-1">
+                <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    stroke-width="2"
+                    d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+                  />
+                </svg>
+                {{ previewData.metadata.sheet }}
+              </span>
+              <span v-if="previewData.metadata.row_number">
+                Row {{ previewData.metadata.row_number }}
+              </span>
+              <span v-if="previewData.metadata.section" class="border-l border-current/30 pl-2">
+                {{ previewData.metadata.section }}
+              </span>
+              <span v-if="previewData.metadata.chunk_index !== undefined" class="opacity-60">
+                Chunk {{ previewData.metadata.chunk_index + 1 }}
+              </span>
+            </div>
+            <div class="bg-muted/30 rounded-lg border p-4">
+              <p class="text-sm leading-relaxed whitespace-pre-wrap">
+                {{ previewData.content }}
+              </p>
             </div>
           </div>
         </template>

@@ -2,9 +2,11 @@
 import { computed, h, ref } from "vue";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
-import { MessageSquare } from "lucide-vue-next";
+import { MessageSquare, Download } from "lucide-vue-next";
 import type { ModelViewConfig } from "~/components/model-view/ModelView.vue";
 import ConversationMessagesDialog from "~/components/admin/ConversationMessagesDialog.vue";
+import { useExport } from "~/composables/useExport";
+import { toast } from "vue-sonner";
 
 interface Conversation {
   id: string;
@@ -23,15 +25,52 @@ interface Conversation {
 }
 
 const { t } = useI18n();
+const { $api } = useNuxtApp();
+const { exportCSV, exporting } = useExport();
 
 definePageMeta({
   breadcrumb: "Conversation Management",
   layout: "admin",
 });
 
+// ModelView ref for accessing data
+const modelViewRef = ref();
+
 // Message dialog state
 const showMessagesDialog = ref(false);
 const selectedConversation = ref<Conversation | null>(null);
+
+// Export all conversations matching current filters
+const handleExportAll = async () => {
+  try {
+    // Fetch all data (with current filters applied)
+    const response = await $api<{ items: Conversation[] }>(`/v1/admin/conversations?size=1000`);
+    const data = response.items || [];
+
+    if (!data.length) {
+      toast.error(t("admin.export.noData"));
+      return;
+    }
+
+    const columns = [
+      { key: "id", label: "ID" },
+      { key: "title", label: "Title" },
+      { key: "assistant_name", label: "Assistant" },
+      { key: "message_count", label: "Messages" },
+      { key: "input_tokens", label: "Input Tokens" },
+      { key: "output_tokens", label: "Output Tokens" },
+      { key: "total_tokens", label: "Total Tokens" },
+      { key: "status", label: "Status" },
+      { key: "created_at", label: "Created At" },
+      { key: "last_message_at", label: "Last Message At" },
+    ];
+
+    await exportCSV(data, { filename: `conversations_${Date.now()}.csv`, columns });
+    toast.success(t("admin.export.success"));
+  } catch (error) {
+    toast.error(t("admin.export.failed"));
+  }
+};
 
 // Open message dialog
 const openMessagesDialog = (conversation: Conversation) => {
@@ -70,6 +109,14 @@ const conversationConfig = computed(
         type: "select",
         label: t("admin.pages.conversations.status"),
         options: statusOptions.value,
+      },
+      created_at: {
+        type: "daterange",
+        label: t("admin.filters.dateRange"),
+      },
+      last_message_at: {
+        type: "daterange",
+        label: t("admin.pages.conversations.columns.lastMessageAt"),
       },
     },
 
@@ -278,6 +325,7 @@ const conversationConfig = computed(
     canEdit: false,
     canDuplicate: false,
     canDelete: true,
+    selectable: true,
   })
 );
 
@@ -290,7 +338,14 @@ const handleRowAction = (action: any, item: Conversation) => {
 </script>
 
 <template>
-  <ModelView :config="conversationConfig" @row-action="handleRowAction" />
+  <ModelView ref="modelViewRef" :config="conversationConfig" @row-action="handleRowAction">
+    <template #actions>
+      <Button variant="outline" @click="handleExportAll" :disabled="exporting">
+        <Download class="mr-2 h-4 w-4" />
+        {{ t("admin.export.csv") }}
+      </Button>
+    </template>
+  </ModelView>
 
   <!-- Message view dialog -->
   <ConversationMessagesDialog
