@@ -1,0 +1,91 @@
+# Docker Compose for MCP Servers
+# Run alongside Airbeeps for extended agent capabilities
+
+version: "3.8"
+
+services:
+  # Brave Web Search
+  mcp-brave-search:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["brave-search"]
+    environment:
+      - BRAVE_API_KEY=${BRAVE_API_KEY}
+    restart: unless-stopped
+    networks:
+      - mcp-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "console.log('ok')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # File System (scoped to uploads)
+  mcp-filesystem:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["filesystem", "/data/uploads"]
+    volumes:
+      - uploads-data:/data/uploads:rw
+    environment:
+      - ALLOWED_DIR=/data/uploads
+    restart: unless-stopped
+    networks:
+      - mcp-network
+    # Security: Read-only root filesystem except for data
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
+    security_opt:
+      - no-new-privileges:true
+
+  # SQLite Database
+  mcp-sqlite:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["sqlite", "/data/database.db"]
+    volumes:
+      - sqlite-data:/data:rw
+    restart: unless-stopped
+    networks:
+      - mcp-network
+
+  # Memory Server (stateless)
+  mcp-memory:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["memory"]
+    restart: unless-stopped
+    networks:
+      - mcp-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # Fetch Server (HTTP requests)
+  mcp-fetch:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["fetch"]
+    restart: unless-stopped
+    networks:
+      - mcp-network
+    # Limit network access if needed
+    # Note: fetch needs external network access
+
+networks:
+  mcp-network:
+    driver: bridge
+    name: airbeeps-mcp
+
+volumes:
+  uploads-data:
+    driver: local
+  sqlite-data:
+    driver: local
