@@ -11,7 +11,7 @@ Access the admin panel at `/admin/system-config` to control system-wide settings
 Toggle visibility of chat interface elements:
 
 - **Share Button** - Share entire conversations
-- **Message Share** - Share individual messages  
+- **Message Share** - Share individual messages
 - **Message Feedback** - Thumbs up/down on responses
 - **Message Stats** - Token usage and timing info
 - **Pin Button** - Pin conversations to top
@@ -24,6 +24,10 @@ Toggle visibility of chat interface elements:
 
 - **Generate Follow-ups** - Auto-suggest next questions after responses
 - **Question Count** - How many to generate (1-5)
+
+### Model Registry
+
+- **External Registry Lookups** - Allow/disable provider discovery and Hugging Face Hub search
 
 ### Authentication & Legal
 
@@ -42,10 +46,12 @@ Configure how conversation titles are generated:
 Set platform-wide defaults at `/admin/assistant-defaults`:
 
 ### Generation Settings
+
 - Temperature, max tokens, and other LiteLLM parameters
 - Assistants can override these or inherit globals
 
 ### RAG Settings
+
 - Retrieval count, similarity threshold, search type
 - Multi-query recall, reranking, hybrid search (BM25 + dense)
 - Assistants in RAG mode can use these defaults
@@ -54,9 +60,11 @@ Set platform-wide defaults at `/admin/assistant-defaults`:
 
 Manage AI providers and models at `/admin/providers` and `/admin/models`:
 
+- Providers are listed dynamically from LiteLLM (no manual list maintenance)
 - Add custom providers (OpenAI-compatible APIs)
 - Configure models with capabilities, token limits
 - Set model status (active/inactive/deprecated)
+- Local embedding models can be searched on Hugging Face Hub and downloaded on demand
 
 ## Knowledge Bases
 
@@ -91,6 +99,78 @@ View usage statistics at `/admin/analytics`:
 - Request counts
 - Response latency
 - Daily/weekly breakdowns
+
+## Model Analytics
+
+Review model-level performance at `/admin/model-analytics`:
+
+- Usage by model/provider
+- Latency and cost trends
+- Success/error rates
+
+## Agent Tools
+
+Manage agent tools at `/admin/agent-tools`:
+
+- View available tools and descriptions
+- See tool security levels and sources
+- Check permissions and required roles
+
+## Agent Traces
+
+Inspect agent execution traces at `/admin/agent-traces`:
+
+- Search and filter traces by date, assistant, or status
+- Drill into span details (agent/tool/LLM)
+- Export trace data for debugging
+
+## MCP Servers
+
+Configure MCP server integrations at `/admin/mcp-servers`:
+
+- Register and activate servers
+- Test connectivity and list tools
+- Manage environment variables for server processes
+
+## Specialists
+
+Manage multi-agent specialists at `/admin/specialists`:
+
+- View specialist types and capabilities
+- Review default tool sets
+- Monitor collaboration patterns
+
+## System Health
+
+Monitor service health at `/admin/system-health`:
+
+- Service status and latency
+- Circuit breaker states
+- Health check history
+
+## Audit Logs
+
+Review security-relevant activity at `/admin/audit-logs`:
+
+- User and admin actions
+- Tool usage and access events
+- Export logs for compliance
+
+## User Roles
+
+Manage roles at `/admin/users/roles`:
+
+- Assign roles to users
+- Review role permissions
+- Enforce least-privilege access
+
+## Privacy Controls
+
+User privacy settings are available at `/settings/privacy`:
+
+- Review consent for memory features
+- Export or delete stored memories
+- Control data retention preferences
 
 ## Tips
 

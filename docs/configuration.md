@@ -1,151 +1,324 @@
-# Configuration Guide
+# Configuration Management
 
-Airbeeps reads backend settings from `backend/.env` (overridable by process environment variables) and frontend runtime values from Nuxt runtime config. Environment variables always win over the file.
+Airbeeps uses a layered configuration system that supports multiple deployment scenarios (development, Docker, production) with sensible defaults.
 
-## Backend Environment
+## Configuration Priority
 
-**Important**: All backend environment variables must use the `AIRBEEPS_` prefix. For example:
-- `AIRBEEPS_SECRET_KEY`
-- `AIRBEEPS_DATABASE_URL`
-- `AIRBEEPS_LOG_LEVEL`
+Settings are loaded in the following priority order (highest to lowest):
 
-The tables below show the **unprefixed key names** for readability. Always add `AIRBEEPS_` when setting them in your environment or `.env` file.
+1. **Environment Variables** - `AIRBEEPS_*` prefix (highest priority)
+2. **.env File** - Local environment file
+3. **Environment-Specific YAML** - `config/settings.{env}.yaml`
+4. **Base YAML** - `config/settings.yaml`
+5. **Hardcoded Defaults** - In `config.py` (lowest priority)
 
-### Core runtime
+## Quick Start
 
-| Variable       | Description                                     | Default                                  |
-| -------------- | ----------------------------------------------- | ---------------------------------------- |
-| `PROJECT_NAME` | Display name shown in APIs/logs                 | `Airbeeps`                               |
-| `ENVIRONMENT`  | `development` or `production`                   | `development`                            |
-| `LOG_LEVEL`    | Logging verbosity                               | `DEBUG`                                  |
-| `DATA_ROOT`    | Base folder for DB/files/vectors                | `data`                                   |
-| `FRONTEND_URL` | Public URL of the web UI                        | `http://localhost:3000`                  |
-| `EXTERNAL_URL` | Public backend URL (OAuth callbacks, links)     | `None`                                   |
-| `DATABASE_URL` | DB URL (Postgres recommended, SQLite supported) | `sqlite+aiosqlite:///./data/airbeeps.db` |
-| `SECRET_KEY`   | JWT/crypto secret (change in production!)       | `change-me-in-production`                |
+### For Development
 
-### Auth & tokens
+1. Copy `.env.example` to `.env`:
 
-| Variable                                                                             | Description               | Default                                                 |
-| ------------------------------------------------------------------------------------ | ------------------------- | ------------------------------------------------------- |
-| `ACCESS_TOKEN_LIFETIME_SECONDS`                                                      | Access token lifetime     | `1800`                                                  |
-| `REFRESH_TOKEN_LIFETIME_SECONDS`                                                     | Refresh token lifetime    | `2592000`                                               |
-| `REFRESH_TOKEN_ROTATION_ENABLED`                                                     | Rotate refresh tokens     | `true`                                                  |
-| `REFRESH_TOKEN_MAX_PER_USER`                                                         | Max active refresh tokens | `5`                                                     |
-| `ACCESS_TOKEN_COOKIE_NAME`, `REFRESH_TOKEN_COOKIE_NAME`, `REFRESH_TOKEN_COOKIE_PATH` | Cookie names/scope        | `access-token`, `refresh-token`, `/api/v1/auth/refresh` |
+   ```bash
+   cp backend/.env.example backend/.env
+   ```
 
-### Email
+2. Edit `.env` to customize your settings:
 
-| Variable                          | Description          | Default               |
-| --------------------------------- | -------------------- | --------------------- |
-| `MAIL_ENABLED`                    | Toggle email sending | `false`               |
-| `MAIL_SERVER` / `MAIL_PORT`       | SMTP host/port       | ``/`587`              |
-| `MAIL_USERNAME` / `MAIL_PASSWORD` | SMTP credentials     | ``                    |
-| `MAIL_STARTTLS` / `MAIL_SSL_TLS`  | TLS settings         | `true` / `false`      |
-| `MAIL_FROM`                       | From address         | `noreply@example.com` |
+   ```bash
+   AIRBEEPS_DATABASE_URL="sqlite+aiosqlite:///./data/airbeeps.db"
+   AIRBEEPS_SECRET_KEY="your-secret-key-here"
+   ```
 
-### File storage
+3. The system automatically loads `config/settings.yaml` + `config/settings.dev.yaml`
 
-| Variable                                                      | Description                            | Default                           |
-| ------------------------------------------------------------- | -------------------------------------- | --------------------------------- |
-| `FILE_STORAGE_BACKEND`                                        | `local` or `s3`                        | `local`                           |
-| `LOCAL_STORAGE_ROOT`                                          | Local storage root (under `DATA_ROOT`) | `files`                           |
-| `LOCAL_PUBLIC_BASE_URL`                                       | Optional public URL for local files    | ``                                |
-| `S3_ENDPOINT_URL` / `S3_EXTERNAL_ENDPOINT_URL`                | S3 internal/external endpoints         | `http://minio:9000` / ``          |
-| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`                   | S3 credentials                         | `minioadmin` / `minioadmin`       |
-| `S3_BUCKET_NAME` / `S3_REGION`                                | Bucket + region                        | `test` / `us-east-1`              |
-| `S3_USE_SSL` / `S3_ADDRESSING_STYLE` / `S3_SIGNATURE_VERSION` | S3 options                             | `false` / `path` / `s3v4`         |
-| `MAX_FILE_SIZE`                                               | Upload size limit (bytes)              | `10485760` (10MB)                 |
-| `ALLOWED_IMAGE_EXTENSIONS`                                    | Image whitelist                        | `.jpg,.jpeg,.png,.webp,.gif,.svg` |
-| `ALLOWED_DOCUMENT_EXTENSIONS`                                 | Document whitelist                     | `.pdf,.doc,.docx,.txt,.md,.rtf`   |
+### For Docker
 
-### Vector store
+1. Set `AIRBEEPS_CONFIG_ENV=docker` in your Docker environment
+2. The system loads `config/settings.yaml` + `config/settings.docker.yaml`
+3. Override specific settings via Docker environment variables
 
-| Variable                                    | Description                                      | Default   |
-| ------------------------------------------- | ------------------------------------------------ | --------- |
-| `CHROMA_SERVER_HOST` / `CHROMA_SERVER_PORT` | Chroma server address (empty host = embedded)    | `` / `8500` |
-| `CHROMA_PERSIST_DIR`                        | Local Chroma persistence (relative to DATA_ROOT) | `chroma`  |
+### For Production
 
-### RAG retrieval (feature flags, API-level)
+1. Set `AIRBEEPS_CONFIG_ENV=production`
+2. Create `config/settings.production.yaml` with production-specific settings
+3. Use environment variables for secrets (API keys, passwords, etc.)
 
-- Multi-query: send `multi_query=true` and `multi_query_count` (default 3) to generate deterministic alt queries and merge results.
-- Rerank: `rerank_top_k` to re-score top candidates with an embedding-based rerank.
-- Hybrid lexical: `hybrid_enabled=true` to fuse lightweight BM25 over recent chunks (cap via `hybrid_corpus_limit`, default 1000).
+## Configuration Structure
 
-### Agent & MCP
+### YAML Configuration Files
 
-| Variable                  | Description                            | Default                 |
-| ------------------------- | -------------------------------------- | ----------------------- |
-| `AGENT_MAX_ITERATIONS`    | Default max agent loops                | `10`                    |
-| `AGENT_TIMEOUT_SECONDS`   | Agent timeout                          | `300`                   |
-| `AGENT_ENABLE_MEMORY`     | Experimental agent memory toggle       | `false`                 |
-| `MCP_ENABLED`             | Enable Model Context Protocol features | `false`                 |
-| `MCP_SERVERS_CONFIG_PATH` | Path to MCP server configs             | `/app/mcp_servers.json` |
+Located in `backend/airbeeps/config/`:
 
-### OAuth helpers
+- **`settings.yaml`** - Base configuration with all defaults
+- **`settings.dev.yaml`** - Development overrides (DEBUG logging, local services)
+- **`settings.docker.yaml`** - Docker overrides (container hostnames)
+- **`settings.production.yaml`** - Production overrides (create as needed)
 
-| Variable                           | Description                                   | Default             |
-| ---------------------------------- | --------------------------------------------- | ------------------- |
-| `OAUTH_CREATE_USER_WITHOUT_EMAIL`  | Allow user creation when provider omits email | `true`              |
-| `OAUTH_REQUIRE_EMAIL_VERIFICATION` | Force verification for OAuth accounts         | `false`             |
-| `OAUTH_EMAIL_DOMAIN`               | Domain for generated emails                   | `oauth.example.com` |
+### Environment Variable Format
 
-## Frontend Environment
-
-Set via process env or `.env` for Nuxt:
-
-- `AIRBEEPS_API_BASE_URL`: Backend API base for dev proxy (default `http://localhost:8500/api`).
-- `AIRBEEPS_APP_NAME`: Title shown in the browser (default `Airbeeps`).
-- `AIRBEEPS_ENABLE_OAUTH_PROVIDERS`: Toggle OAuth buttons (default `true`).
-
-## System Configuration (DB-backed)
-
-- Stored in the `system_configs` table, cached in-memory, and exposed through the Admin UI (`/admin/system-config`).
-- Used for runtime feature toggles such as `allow_user_create_assistants` and `conversation_title_model_id` (model used for title generation).
-- When new keys are added, run `uv run scripts/bootstrap.py config-init` to backfill defaults.
-
-## Seed Data & Bootstrap
-
-- Default seed file: `backend/airbeeps/config/seed.yaml` (system config defaults). Override via `AIRBEEPS_SEED_FILE`.
-- `uv run scripts/bootstrap.py init` runs migrations and seeds safe defaults. Airbeeps does **not** ship a default admin credential — the first registered user becomes an admin.
-
-## Example Configuration
-
-### Minimal Development Setup
-
-Create `backend/.env`:
+Use double underscores (`__`) for nested configuration:
 
 ```bash
-# Generate a secure secret
-AIRBEEPS_SECRET_KEY=your-secret-key-here
-
-# Optional: override defaults
+# Flat config
 AIRBEEPS_LOG_LEVEL=DEBUG
-AIRBEEPS_DATABASE_URL=sqlite+aiosqlite:///./data/airbeeps.db
-AIRBEEPS_CHROMA_PERSIST_DIR=chroma
+
+# Nested config
+AIRBEEPS__VECTOR_STORE__TYPE=qdrant
+AIRBEEPS__VECTOR_STORE__QDRANT__URL=http://localhost:6333
+AIRBEEPS__RAG__FEATURES__ENABLE_HYBRID_SEARCH=true
 ```
 
-### Production Recommendations
+## Configuration Sections
+
+### Vector Store
+
+Configure your vector database:
+
+```yaml
+# YAML (config/settings.yaml)
+vector_store:
+  type: "qdrant" # qdrant | chromadb | pgvector | milvus
+  qdrant:
+    url: "http://localhost:6333"
+    api_key: ""
+    persist_dir: "qdrant"
+```
 
 ```bash
-# Security
-AIRBEEPS_SECRET_KEY=<strong-random-key>
-AIRBEEPS_ENVIRONMENT=production
-
-# Database (use PostgreSQL)
-AIRBEEPS_DATABASE_URL=postgresql+asyncpg://user:pass@localhost/airbeeps
-
-# External access
-AIRBEEPS_EXTERNAL_URL=https://your-domain.com
-AIRBEEPS_FRONTEND_URL=https://your-domain.com
-
-# Email
-AIRBEEPS_MAIL_ENABLED=true
-AIRBEEPS_MAIL_SERVER=smtp.gmail.com
-AIRBEEPS_MAIL_PORT=587
-AIRBEEPS_MAIL_USERNAME=your-email@gmail.com
-AIRBEEPS_MAIL_PASSWORD=app-specific-password
-AIRBEEPS_MAIL_FROM=noreply@your-domain.com
+# Environment Variables
+AIRBEEPS__VECTOR_STORE__TYPE=qdrant
+AIRBEEPS__VECTOR_STORE__QDRANT__URL=http://localhost:6333
+AIRBEEPS__VECTOR_STORE__QDRANT__API_KEY=your-api-key
 ```
 
-See [SECURITY.md](../SECURITY.md) for additional production hardening recommendations.
+### RAG Settings
+
+Control RAG features and behavior:
+
+```yaml
+# YAML
+rag:
+  features:
+    enable_hybrid_search: true
+    enable_reranking: true
+    enable_hierarchical: true
+    enable_semantic_chunking: true
+  reranker:
+    model: "BAAI/bge-reranker-v2-m3"
+    top_n: 5
+  query_transform:
+    type: "multi_query" # none | hyde | multi_query | step_back
+```
+
+```bash
+# Environment Variables
+AIRBEEPS__RAG__FEATURES__ENABLE_HYBRID_SEARCH=true
+AIRBEEPS__RAG__RERANKER__MODEL=BAAI/bge-reranker-v2-m3
+AIRBEEPS__RAG__QUERY_TRANSFORM__TYPE=multi_query
+```
+
+### Agent Configuration
+
+Configure agentic behavior:
+
+```yaml
+# YAML
+agent:
+  max_iterations: 10
+  timeout_seconds: 300
+  enable_memory: false
+```
+
+```bash
+# Environment Variables
+AIRBEEPS__AGENT__MAX_ITERATIONS=15
+AIRBEEPS__AGENT__ENABLE_MEMORY=true
+```
+
+### File Storage
+
+Choose between local or S3 storage:
+
+```yaml
+# YAML
+file_storage:
+  backend: "local" # local | s3
+  local:
+    storage_root: "files"
+  s3:
+    endpoint_url: "http://minio:9000"
+    access_key_id: "minioadmin"
+    secret_access_key: "minioadmin"
+    bucket_name: "airbeeps"
+```
+
+```bash
+# Environment Variables
+AIRBEEPS__FILE_STORAGE__BACKEND=s3
+AIRBEEPS__FILE_STORAGE__S3__ENDPOINT_URL=http://minio:9000
+AIRBEEPS__FILE_STORAGE__S3__ACCESS_KEY_ID=your-key
+AIRBEEPS__FILE_STORAGE__S3__SECRET_ACCESS_KEY=your-secret
+```
+
+### Model Registry
+
+Control external provider/model discovery lookups (LiteLLM provider list and Hugging Face Hub search):
+
+```yaml
+# YAML
+ai_registry:
+  allow_external: true
+```
+
+```bash
+# Environment Variables
+AIRBEEPS__AI_REGISTRY__ALLOW_EXTERNAL=true
+```
+
+## Best Practices
+
+### 1. Secrets Management
+
+**Never commit secrets to YAML files.** Always use environment variables for sensitive data:
+
+```bash
+# .env (not committed)
+AIRBEEPS_SECRET_KEY=your-secret-key
+AIRBEEPS__VECTOR_STORE__QDRANT__API_KEY=your-api-key
+AIRBEEPS__FILE_STORAGE__S3__SECRET_ACCESS_KEY=your-secret
+AIRBEEPS__EMAIL__PASSWORD=your-password
+```
+
+### 2. Environment-Specific Configuration
+
+Use YAML files for environment-specific non-secret settings:
+
+```yaml
+# config/settings.dev.yaml
+logging:
+  level: "DEBUG"
+
+agent:
+  max_iterations: 15  # More iterations for testing
+
+# config/settings.production.yaml
+logging:
+  level: "INFO"
+
+agent:
+  max_iterations: 10
+```
+
+### 3. Docker Deployments
+
+In Docker Compose:
+
+```yaml
+services:
+  airbeeps:
+    environment:
+      - AIRBEEPS_CONFIG_ENV=docker
+      - AIRBEEPS_SECRET_KEY=${SECRET_KEY}
+      - AIRBEEPS__VECTOR_STORE__TYPE=qdrant
+      - AIRBEEPS__VECTOR_STORE__QDRANT__URL=http://qdrant:6333
+```
+
+### 4. Wheel Distribution
+
+When distributing as a wheel:
+
+1. Ship YAML files with sensible defaults
+2. Users override via `.env` file in their working directory
+3. Advanced users can create custom YAML files
+
+## Example Configurations
+
+### Local Development (SQLite + Embedded Qdrant)
+
+```yaml
+# config/settings.dev.yaml
+vector_store:
+  type: "qdrant"
+  qdrant:
+    url: "" # Empty = embedded mode
+    persist_dir: "qdrant"
+
+file_storage:
+  backend: "local"
+```
+
+### Docker (External Services)
+
+```yaml
+# config/settings.docker.yaml
+vector_store:
+  type: "qdrant"
+  qdrant:
+    url: "http://qdrant:6333"
+
+file_storage:
+  backend: "s3"
+  s3:
+    endpoint_url: "http://minio:9000"
+```
+
+### Production (Cloud Services)
+
+```bash
+# .env (production)
+AIRBEEPS_CONFIG_ENV=production
+AIRBEEPS__VECTOR_STORE__TYPE=qdrant
+AIRBEEPS__VECTOR_STORE__QDRANT__URL=https://your-qdrant-cluster.cloud:6333
+AIRBEEPS__VECTOR_STORE__QDRANT__API_KEY=your-production-key
+AIRBEEPS__FILE_STORAGE__BACKEND=s3
+AIRBEEPS__FILE_STORAGE__S3__ENDPOINT_URL=https://s3.amazonaws.com
+AIRBEEPS__FILE_STORAGE__S3__ACCESS_KEY_ID=your-aws-key
+AIRBEEPS__FILE_STORAGE__S3__SECRET_ACCESS_KEY=your-aws-secret
+AIRBEEPS__FILE_STORAGE__S3__BUCKET_NAME=your-production-bucket
+```
+
+## Troubleshooting
+
+### Check Loaded Configuration
+
+```python
+from airbeeps.config import settings
+
+print(f"Environment: {settings.ENVIRONMENT}")
+print(f"Vector Store: {settings.VECTOR_STORE_TYPE}")
+print(f"RAG Hybrid Search: {settings.RAG_ENABLE_HYBRID_SEARCH}")
+```
+
+### Configuration Not Loading
+
+1. Check `AIRBEEPS_CONFIG_ENV` is set correctly
+2. Verify YAML files exist in `backend/airbeeps/config/`
+3. Ensure environment variable names use correct prefixes (`AIRBEEPS_` or `AIRBEEPS__`)
+4. Remember: env vars take precedence over YAML
+
+### Override Not Working
+
+Priority order matters! If an environment variable is set, it will override YAML:
+
+```bash
+# This env var takes precedence over any YAML config
+export AIRBEEPS__VECTOR_STORE__TYPE=chromadb
+
+# To use YAML value, unset the env var
+unset AIRBEEPS__VECTOR_STORE__TYPE
+```
+
+## Migration from Old Config
+
+If upgrading from a previous version:
+
+1. Old environment variables still work (backward compatible)
+2. Gradually migrate settings to new YAML structure
+3. Old flat variables (e.g., `AIRBEEPS_QDRANT_URL`) map to new nested structure
+4. Review `config/settings.yaml` for all available options
+
+## See Also
+
+- [settings.yaml](../backend/airbeeps/config/settings.yaml) - Base configuration with all options
+- [.env.example](../backend/.env.example) - Environment variable examples
+- [Pydantic Settings Documentation](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)

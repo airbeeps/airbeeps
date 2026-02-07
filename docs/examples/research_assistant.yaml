@@ -1,0 +1,92 @@
+# Research Assistant Configuration
+# A specialist agent for web search and document research
+
+# Assistant settings
+name: "Research Assistant"
+display_name: "Research Expert"
+description: |
+  A research specialist that excels at finding information from the web
+  and internal knowledge bases. Uses query planning for complex questions.
+
+# System prompt
+system_prompt: |
+  You are a research specialist with expertise in finding and synthesizing information.
+
+  CAPABILITIES:
+  - Search the web for current information using web_search
+  - Query internal documents using knowledge_base_query
+  - Plan complex queries by breaking them into sub-questions
+  - Synthesize information from multiple sources
+
+  GUIDELINES:
+  - Always cite your sources with URLs or document references
+  - For complex questions, break them down into smaller searches
+  - Cross-reference information from multiple sources when possible
+  - If you cannot find information, clearly state what you searched for
+  - Never fabricate or hallucinate information
+
+  WORKFLOW:
+  1. Analyze the user's question
+  2. Plan your search strategy (what to search, where)
+  3. Execute searches
+  4. Synthesize findings with citations
+  5. If unsure, ask clarifying questions
+
+# Agent configuration
+agent_tools_enabled: true
+agent_max_iterations: 8
+agent_token_budget: 10000
+agent_cost_limit_usd: 0.75
+
+# Planning and reflection
+agent_enable_planning: true
+agent_enable_reflection: true
+agent_reflection_threshold: 7.0
+
+# Agentic RAG settings
+agent_rag_mode: "query_planning" # standard, query_planning, self_rag, multi_hop
+agent_enable_query_planning: true
+agent_enable_self_rag: true
+agent_self_rag_min_confidence: 70
+agent_enable_multi_hop: true
+agent_multi_hop_max_hops: 3
+
+# Tool timeout
+agent_tool_timeout_seconds: 60
+agent_tool_max_retries: 2
+
+# Memory (optional)
+enable_memory: true
+
+# Specialist type for multi-agent
+specialist_type: "RESEARCH"
+can_collaborate: true
+collaboration_max_handoffs: 2
+collaboration_cost_limit_per_handoff: 0.25
+collaboration_allowed_specialists:
+  - "CODE"
+  - "DATA"
+  - "GENERAL"
+
+# Tools to attach (by name)
+tools:
+  - web_search
+  - knowledge_base_query
+
+# Tool-specific configuration
+tool_config:
+  web_search:
+    max_results: 10
+    timeout_seconds: 30
+  knowledge_base_query:
+    mode: "query_planning"
+    top_k: 10
+
+# Example usage:
+# User: "Compare the market share of Apple and Samsung in 2024"
+#
+# Agent behavior:
+# 1. Plans sub-queries: "Apple market share 2024", "Samsung market share 2024"
+# 2. Executes web searches for both
+# 3. Synthesizes comparison with citations
+# 4. Returns formatted response with sources

@@ -5,6 +5,24 @@
 - Python 3.13+ with [`uv`](https://docs.astral.sh/uv/)
 - Node.js 20+ (18+ minimum) with [`pnpm`](https://pnpm.io/)
 
+## Docker (Production-style)
+
+1. Copy the Docker env file:
+   ```bash
+   cp .env.docker.example .env.docker
+   ```
+
+2. Set a secure `AIRBEEPS_SECRET_KEY` and credentials in `.env.docker`.
+
+3. Start the stack:
+   ```bash
+   docker compose --env-file .env.docker up --build
+   ```
+
+4. Open `http://localhost:8080`.
+
+For full details, see [DOCKER.md](DOCKER.md).
+
 ## Local setup
 
 1. **Create backend configuration**:
@@ -68,6 +86,14 @@
 
 6. **First user**: Open `http://localhost:3000` and sign up - the first registered user automatically becomes an admin.
 
+7. **Admin tour** (optional):
+   - System config: `/admin/system-config`
+   - Model providers and registry: `/admin/model-providers`, `/admin/models`
+   - MCP servers: `/admin/mcp-servers`
+   - Agent tools and traces: `/admin/agent-tools`, `/admin/agent-traces`
+   - Model analytics and audit logs: `/admin/model-analytics`, `/admin/audit-logs`
+   - System health: `/admin/system-health`
+
 ## Admin CLI Reference
 
 All commands run from `backend/` directory:
@@ -92,6 +118,7 @@ All commands run from `backend/` directory:
 - Configure LLM providers in the Admin UI (`/admin/model-providers`)
 - Create your first assistant (`/admin/assistants`)
 - Upload documents to a knowledge base (`/admin/kbs`)
+- Review roles and privacy settings (`/admin/users/roles`, `/settings/privacy`)
 - Start chatting!
 
-For production deployment, see [configuration.md](configuration.md) for security hardening and [SECURITY.md](../SECURITY.md) for best practices.
+For production deployment, see [configuration.md](configuration.md) for security hardening and [SECURITY.md](../SECURITY.md) for best practices. For a full admin feature list, see [ADMIN_FEATURES.md](ADMIN_FEATURES.md).

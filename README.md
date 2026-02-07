@@ -38,7 +38,6 @@ Airbeeps targets local and private deployments, with simple and lightweight auth
 - MCP integration
 - Improved authentication options
 - External object storage support
-- Docker-based distribution
 
 See [ROADMAP.md](ROADMAP.md) for details.
 
@@ -47,6 +46,7 @@ See [ROADMAP.md](ROADMAP.md) for details.
 ## 📚 Documentation
 
 - **[Quick Start Guide](docs/QUICKSTART.md)** - Get up and running quickly
+- **[Docker Deployment](docs/DOCKER.md)** - Production Docker setup
 - **[Configuration Guide](docs/configuration.md)** - Environment variables and settings
 - **[Admin Features](docs/ADMIN_FEATURES.md)** - System settings and UI toggles
 - **[Legal Documents](docs/LEGAL_DOCUMENTS.md)** - Setup Terms & Privacy Policy
@@ -68,6 +68,10 @@ airbeeps run
 ```
 
 Open `http://localhost:8500` and sign up - the first user becomes admin.
+
+### Docker (Production-style)
+
+See [docs/DOCKER.md](docs/DOCKER.md) for a full Docker + Postgres + MinIO setup.
 
 ### For Developers (Local Development)
 
@@ -107,7 +111,7 @@ Airbeeps builds upon the excellent work of the open-source community. Special th
 **Core Backend**
 - [FastAPI](https://fastapi.tiangolo.com/) - Modern Python web framework
 - [FastAPI Users](https://frankie567.github.io/fastapi-users/) - Authentication system
-- [LangChain](https://www.langchain.com/) - LLM orchestration and RAG
+- [LlamaIndex](https://www.llamaindex.ai/) - LLM orchestration and RAG
 - [LiteLLM](https://docs.litellm.ai/) - Unified LLM API client
 - [ChromaDB](https://www.trychroma.com/) - Vector database
 - [SQLAlchemy](https://www.sqlalchemy.org/) - Database ORM

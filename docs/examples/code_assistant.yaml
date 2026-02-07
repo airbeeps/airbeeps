@@ -1,0 +1,114 @@
+# Code Assistant Configuration
+# A specialist agent for code generation and execution
+
+# Assistant settings
+name: "Code Assistant"
+display_name: "Python Developer"
+description: |
+  A coding specialist that can write, execute, and debug Python code.
+  Runs code in a secure sandbox with limited resources.
+
+# System prompt
+system_prompt: |
+  You are an expert Python developer who writes clean, efficient, and well-documented code.
+
+  CAPABILITIES:
+  - Write Python code for various tasks
+  - Execute code in a secure sandbox using execute_python
+  - Read and write files in the uploads directory using file_operations
+  - Debug and fix code issues
+
+  SANDBOX LIMITATIONS:
+  - 30 second timeout
+  - 256MB memory limit
+  - Allowed imports: math, json, datetime, pandas, numpy, collections, itertools
+  - No network access, no file system access outside sandbox
+
+  GUIDELINES:
+  - Always test your code before presenting it
+  - Write clear comments explaining the logic
+  - Handle errors gracefully with try/except
+  - Use type hints when appropriate
+  - Keep code modular and reusable
+
+  WORKFLOW:
+  1. Understand the user's requirements
+  2. Plan the solution approach
+  3. Write the code
+  4. Test it in the sandbox
+  5. Fix any issues
+  6. Present the final working code
+
+  SAFETY:
+  - Never attempt to access system resources
+  - Never try to bypass sandbox restrictions
+  - Report if you cannot accomplish something due to limitations
+
+# Agent configuration
+agent_tools_enabled: true
+agent_max_iterations: 5
+agent_token_budget: 6000
+agent_cost_limit_usd: 0.40
+
+# Planning and reflection
+agent_enable_planning: true
+agent_enable_reflection: true
+agent_reflection_threshold: 8.0 # Higher threshold for code quality
+
+# Agentic RAG (limited for code assistant)
+agent_rag_mode: "standard"
+agent_enable_query_planning: false
+agent_enable_self_rag: false
+
+# Tool timeout (code can take longer)
+agent_tool_timeout_seconds: 45
+agent_tool_max_retries: 1 # Don't retry code execution
+
+# Memory
+enable_memory: false # Code doesn't benefit much from memory
+
+# Specialist type
+specialist_type: "CODE"
+can_collaborate: true
+collaboration_max_handoffs: 1
+collaboration_cost_limit_per_handoff: 0.15
+collaboration_allowed_specialists:
+  - "RESEARCH" # Can ask for research if needed
+  - "DATA" # Can work with data assistant
+
+# Tools to attach
+tools:
+  - execute_python
+  - file_operations
+
+# Tool-specific configuration
+tool_config:
+  execute_python:
+    timeout_seconds: 30
+    max_memory_mb: 256
+    allowed_imports:
+      - math
+      - json
+      - datetime
+      - pandas
+      - numpy
+      - collections
+      - itertools
+      - re
+      - typing
+  file_operations:
+    allowed_operations:
+      - read
+      - write
+      - list
+    base_directory: "/uploads" # Scoped to uploads
+
+
+# Example usage:
+# User: "Write a function to calculate fibonacci numbers and test it"
+#
+# Agent behavior:
+# 1. Plans: Write function, test with examples
+# 2. Writes fibonacci function with memoization
+# 3. Executes test code in sandbox
+# 4. Returns working code with output

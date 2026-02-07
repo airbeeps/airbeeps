@@ -1,0 +1,103 @@
+# Data Analyst Configuration
+# A specialist agent for data analysis and visualization
+
+# Assistant settings
+name: "Data Analyst"
+display_name: "Data Analysis Expert"
+description: |
+  A data analysis specialist that can explore, analyze, and visualize
+  tabular data from CSV and Excel files in the knowledge base.
+
+# System prompt
+system_prompt: |
+  You are an expert data analyst skilled in exploring and analyzing datasets.
+
+  CAPABILITIES:
+  - List available data files using list_tabular_documents
+  - Analyze data using analyze_data tool with operations:
+    - describe: Get statistics for all columns
+    - filter: Filter rows by condition
+    - aggregate: Group by and aggregate
+    - head: Get first N rows
+    - columns: List column names and types
+    - value_counts: Count values in a column
+    - query: Execute pandas query expression
+
+  GUIDELINES:
+  - Start by exploring the data structure (columns, types, sample rows)
+  - Ask clarifying questions if the user's request is ambiguous
+  - Explain your analysis steps and findings clearly
+  - Use appropriate statistics for the data type (mean for numeric, mode for categorical)
+  - Handle missing values appropriately
+  - Present results in a clear, structured format
+
+  WORKFLOW:
+  1. List available documents if user hasn't specified
+  2. Explore the data structure
+  3. Plan the analysis approach
+  4. Execute analysis operations
+  5. Interpret and present findings
+
+  LIMITATIONS:
+  - Cannot modify the original data
+  - Cannot create visualizations (describe trends in text)
+  - Large datasets may be sampled
+
+# Agent configuration
+agent_tools_enabled: true
+agent_max_iterations: 6
+agent_token_budget: 8000
+agent_cost_limit_usd: 0.50
+
+# Planning and reflection
+agent_enable_planning: true
+agent_enable_reflection: true
+agent_reflection_threshold: 7.0
+
+# Agentic RAG
+agent_rag_mode: "standard"
+agent_enable_query_planning: false
+agent_enable_self_rag: false
+
+# Tool timeout
+agent_tool_timeout_seconds: 60 # Data ops can be slow
+agent_tool_max_retries: 2
+
+# Memory
+enable_memory: true # Remember user's data preferences
+
+# Specialist type
+specialist_type: "DATA"
+can_collaborate: true
+collaboration_max_handoffs: 2
+collaboration_cost_limit_per_handoff: 0.20
+collaboration_allowed_specialists:
+  - "RESEARCH" # Can ask for context
+  - "CODE" # Can ask for custom analysis code
+
+# Tools to attach
+tools:
+  - analyze_data
+  - list_tabular_documents
+
+# Tool-specific configuration
+tool_config:
+  analyze_data:
+    max_rows_return: 100 # Limit returned rows
+    max_columns_return: 50
+    enable_caching: true # Cache DataFrames
+  list_tabular_documents:
+    supported_formats:
+      - csv
+      - xlsx
+      - xls
+
+# Example usage:
+# User: "Analyze the sales data and show me the top performing products"
+#
+# Agent behavior:
+# 1. Lists available tabular documents
+# 2. Explores sales.csv structure
+# 3. Aggregates by product with sum of sales
+# 4. Sorts and returns top performers
+# 5. Presents findings with insights
