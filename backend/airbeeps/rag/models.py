@@ -202,18 +202,27 @@ class KnowledgeBase(Base):
     embedding_model_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("models.id", ondelete="SET NULL"), nullable=True
     )
-    chunk_size: Mapped[int] = mapped_column(Integer, default=500)
-    chunk_overlap: Mapped[int] = mapped_column(Integer, default=80)
     reindex_required: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    # Embedding configuration (optional, stores model-specific parameters)
-    # Also stores RAG engine configuration:
+    # Vector store configuration
+    vector_store_type: Mapped[str] = mapped_column(String(20), default="qdrant")
     # {
-    #   "engine_type": "vector",  # "vector" | "hybrid" | "graph" | "lightrag"
-    #   "engine_config": {...},    # Engine-specific settings
-    #   ...model-specific params...
+    #   "url": "http://localhost:6333",
+    #   "api_key": "...",
+    #   "collection_settings": {...}
     # }
-    embedding_config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    vector_store_config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    # Retrieval configuration
+    # {
+    #   "use_hybrid": true,
+    #   "use_rerank": true,
+    #   "reranker_model": "BAAI/bge-reranker-v2-m3",
+    #   "use_hierarchical": true,
+    #   "query_transform": "multi_query",
+    #   "semantic_chunking": true
+    # }
+    retrieval_config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     # Associated user
     owner_id: Mapped[uuid.UUID] = mapped_column(

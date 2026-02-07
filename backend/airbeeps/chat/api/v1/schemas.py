@@ -224,12 +224,51 @@ class MessageResponse(MessageBase):
     created_at: datetime
     updated_at: datetime
 
+    # Message editing fields
+    edited_at: datetime | None = Field(
+        None, description="When the message was last edited"
+    )
+    original_content: str | None = Field(
+        None, description="Original content before editing (if edited)"
+    )
+    is_regenerated: bool = Field(
+        default=False, description="Whether this is a regenerated response"
+    )
+    parent_message_id: uuid.UUID | None = Field(
+        None, description="Parent message ID for regenerated messages"
+    )
+
     model_config = ConfigDict(from_attributes=True)
 
     @field_validator("extra_data", mode="before")
     @classmethod
     def _default_extra_data(cls, value: dict[str, Any] | None) -> dict[str, Any]:
         return value or {}
+
+
+class MessageEditRequest(BaseModel):
+    """Schema for editing a user message"""
+
+    content: str = Field(
+        ...,
+        min_length=1,
+        max_length=50000,
+        description="New content for the message",
+    )
+    regenerate: bool = Field(
+        default=True,
+        description="Whether to regenerate the assistant response after editing",
+    )
+
+
+class MessageEditResponse(BaseModel):
+    """Response after editing a message"""
+
+    message: MessageResponse = Field(..., description="The edited message")
+    deleted_count: int = Field(
+        default=0,
+        description="Number of subsequent messages deleted",
+    )
 
 
 # Message feedback schemas
@@ -243,7 +282,7 @@ class MessageFeedbackCreate(BaseModel):
         max_length=20,
     )
     comment: str | None = Field(
-        default=None, description="Optional free-text feedback", max_length=5000
+        default=None, description="Optional free-text feedback", max_length=500
     )
     extra_data: dict[str, Any] = Field(
         default_factory=dict, description="Optional structured metadata"
@@ -278,6 +317,27 @@ class MessageFeedbackResponse(BaseModel):
         cls, value: dict[str, Any] | None
     ) -> dict[str, Any]:
         return value or {}
+
+
+class MessageFeedbackAdminResponse(MessageFeedbackResponse):
+    """Extended feedback response for admin with user/assistant info."""
+
+    user_email: str | None = None
+    user_name: str | None = None
+    assistant_name: str | None = None
+    message_content: str | None = None
+
+
+class FeedbackStatsResponse(BaseModel):
+    """Statistics for feedback."""
+
+    total_feedback: int
+    thumbs_up: int
+    thumbs_down: int
+    period_days: int
+    feedback_by_rating: dict[str, int]
+    top_reasons: list[dict[str, Any]]
+    feedback_by_assistant: list[dict[str, Any]]
 
 
 # Conversation share schemas
@@ -383,6 +443,14 @@ class ChatRequest(BaseModel):
     )
     language: str | None = Field(
         None, description="Language code for localization (e.g. en-US)"
+    )
+    model_id_override: uuid.UUID | None = Field(
+        None,
+        description="Override model for this message (uses assistant default if not set)",
+    )
+    web_search_enabled: bool | None = Field(
+        None,
+        description="Enable/disable web search for this message (uses assistant default if not set)",
     )
 
 

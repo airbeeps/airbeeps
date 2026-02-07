@@ -1,9 +1,17 @@
+"""
+LlamaIndex Embedding Service for AirBeeps.
+
+Provides embedding models for vector indexing and retrieval.
+Supports multiple providers: OpenAI, HuggingFace, DashScope, and local models.
+"""
+
 import asyncio
 import hashlib
 import logging
 import uuid
+from typing import Any
 
-from langchain_core.embeddings import Embeddings
+from llama_index.core.embeddings import BaseEmbedding
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -32,7 +40,7 @@ def _is_test_mode() -> bool:
 # =============================================================================
 
 
-class FakeEmbeddings(Embeddings):
+class FakeEmbedding(BaseEmbedding):
     """
     Fake embeddings for test mode.
 
@@ -41,11 +49,18 @@ class FakeEmbeddings(Embeddings):
     """
 
     # Fixed embedding dimension (common for many models)
-    EMBEDDING_DIM = 384
+    EMBEDDING_DIM: int = 384
 
-    def __init__(self, model_name: str = "fake-embeddings"):
+    model_name: str = "fake-embeddings"
+
+    def __init__(self, model_name: str = "fake-embeddings", **kwargs: Any):
+        super().__init__(**kwargs)
         self.model_name = model_name
-        logger.info(f"FakeEmbeddings created for model: {model_name} (TEST_MODE)")
+        logger.info(f"FakeEmbedding created for model: {model_name} (TEST_MODE)")
+
+    @classmethod
+    def class_name(cls) -> str:
+        return "FakeEmbedding"
 
     def _text_to_vector(self, text: str) -> list[float]:
         """
@@ -72,26 +87,36 @@ class FakeEmbeddings(Embeddings):
 
         return vector
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Embed a list of documents."""
-        logger.debug(f"FakeEmbeddings.embed_documents called with {len(texts)} texts")
-        return [self._text_to_vector(text) for text in texts]
+    def _get_text_embedding(self, text: str) -> list[float]:
+        """Get embedding for a single text."""
+        return self._text_to_vector(text)
 
-    def embed_query(self, text: str) -> list[float]:
-        """Embed a query string."""
-        logger.debug("FakeEmbeddings.embed_query called")
+    def _get_query_embedding(self, query: str) -> list[float]:
+        """Get embedding for a query."""
+        return self._text_to_vector(query)
+
+    async def _aget_query_embedding(self, query: str) -> list[float]:
+        """Async get embedding for a query."""
+        return self._text_to_vector(query)
+
+    async def _aget_text_embedding(self, text: str) -> list[float]:
+        """Async get embedding for a single text."""
         return self._text_to_vector(text)
 
 
 class EmbeddingService:
-    """Vector Embedding Service - Provides LangChain Embeddings instances based on model info"""
+    """
+    LlamaIndex Embedding Service.
+
+    Provides embedding models for vector indexing and retrieval.
+    """
 
     def __init__(self):
         # Cache initialized embedders to avoid repeated construction
-        self._embedder_cache: dict[str, Embeddings] = {}
+        self._embedder_cache: dict[str, BaseEmbedding] = {}
 
-    async def get_embedder(self, model_id: str) -> Embeddings:
-        """Get LangChain Embeddings instance by model ID"""
+    async def get_embed_model(self, model_id: str) -> BaseEmbedding:
+        """Get LlamaIndex embedding model by model ID."""
         model = await self._get_model_by_id(model_id)
         if not model:
             raise ValueError(f"Model not found: {model_id}")
@@ -101,8 +126,45 @@ class EmbeddingService:
 
         return await self._get_embedder_for_model(model)
 
+    async def get_embed_model_with_info(
+        self, model_id: str
+    ) -> tuple[BaseEmbedding, dict[str, Any]]:
+        """Get embedding model along with model info."""
+        model = await self._get_model_by_id(model_id)
+        if not model:
+            raise ValueError(f"Model not found: {model_id}")
+
+        if "embedding" not in model.capabilities:
+            raise ValueError(f"Model {model.name} does not support embedding")
+
+        embedder = await self._get_embedder_for_model(model)
+
+        info = {
+            "model_id": str(model.id),
+            "model_name": model.name,
+            "display_name": model.display_name,
+            "embed_dim": self._get_embed_dim(model),
+        }
+
+        return embedder, info
+
+    def _get_embed_dim(self, model: Model) -> int:
+        """Get embedding dimension for a model."""
+        # Common embedding dimensions
+        dim_map = {
+            "text-embedding-3-small": 1536,
+            "text-embedding-3-large": 3072,
+            "text-embedding-ada-002": 1536,
+            "BAAI/bge-small-en-v1.5": 384,
+            "BAAI/bge-base-en-v1.5": 768,
+            "BAAI/bge-large-en-v1.5": 1024,
+            "sentence-transformers/all-MiniLM-L6-v2": 384,
+            "sentence-transformers/all-mpnet-base-v2": 768,
+        }
+        return dim_map.get(model.name, 384)
+
     async def list_available_embedding_models(self) -> list[dict]:
-        """Get all available embedding models"""
+        """Get all available embedding models."""
         try:
             async with async_session_maker() as session:
                 stmt = (
@@ -113,7 +175,7 @@ class EmbeddingService:
                 result = await session.execute(stmt)
                 all_models = result.scalars().all()
 
-                # Filter models with embedding capability at Python level for database compatibility
+                # Filter models with embedding capability
                 models = [m for m in all_models if "embedding" in m.capabilities]
 
                 return [
@@ -126,6 +188,7 @@ class EmbeddingService:
                         else "Unknown",
                         "description": model.description,
                         "max_context_tokens": model.max_context_tokens,
+                        "embed_dim": self._get_embed_dim(model),
                     }
                     for model in models
                 ]
@@ -135,7 +198,7 @@ class EmbeddingService:
             return []
 
     async def _get_model_by_id(self, model_id: str) -> Model | None:
-        """Get model by ID"""
+        """Get model by ID."""
         try:
             async with async_session_maker() as session:
                 stmt = (
@@ -149,20 +212,21 @@ class EmbeddingService:
             logger.error(f"Failed to get model {model_id}: {e}")
             return None
 
-    async def _get_embedder_for_model(self, model: Model) -> Embeddings:
-        """Return LangChain embedder instance based on model provider config.
+    async def _get_embedder_for_model(self, model: Model) -> BaseEmbedding:
+        """
+        Return LlamaIndex embedding model based on provider config.
 
-        In test mode (AIRBEEPS_TEST_MODE=1), returns a FakeEmbeddings instance
+        In test mode (AIRBEEPS_TEST_MODE=1), returns a FakeEmbedding instance
         that produces deterministic vectors without making any external API calls.
         """
-        # Check for test mode first - return fake embeddings without any external setup
+        # Check for test mode first
         if _is_test_mode():
             cache_key = f"fake:{model.name}"
             if cache_key not in self._embedder_cache:
                 logger.info(
-                    f"TEST_MODE: Creating FakeEmbeddings for model: {model.name}"
+                    f"TEST_MODE: Creating FakeEmbedding for model: {model.name}"
                 )
-                self._embedder_cache[cache_key] = FakeEmbeddings(model_name=model.name)
+                self._embedder_cache[cache_key] = FakeEmbedding(model_name=model.name)
             return self._embedder_cache[cache_key]
 
         provider = model.provider
@@ -188,6 +252,7 @@ class EmbeddingService:
         return embedder
 
     async def _get_hf_local_path(self, repo_id: str) -> str | None:
+        """Get local path for HuggingFace model if downloaded."""
         try:
             async with async_session_maker() as session:
                 stmt = (
@@ -209,52 +274,67 @@ class EmbeddingService:
         provider: ModelProvider,
         model: Model,
         hf_local_path: str | None = None,
-    ) -> Embeddings:
-        """Construct concrete embedder instance"""
+    ) -> BaseEmbedding:
+        """Construct LlamaIndex embedding model instance."""
         category = provider.category
 
-        # OpenAI-compatible providers (including custom endpoints)
+        # OpenAI-compatible providers
         if category == ProviderCategoryEnum.OPENAI_COMPATIBLE or (
             category == ProviderCategoryEnum.CUSTOM and provider.is_openai_compatible
         ):
-            from langchain_openai import OpenAIEmbeddings
+            from llama_index.embeddings.openai import OpenAIEmbedding
 
-            kwargs = {"model": model.name}
+            kwargs: dict[str, Any] = {"model": model.name}
             if provider.api_key:
-                kwargs["openai_api_key"] = provider.api_key
+                kwargs["api_key"] = provider.api_key
             if provider.api_base_url:
-                kwargs["openai_api_base"] = provider.api_base_url
+                kwargs["api_base"] = provider.api_base_url
 
-            return OpenAIEmbeddings(**kwargs)
+            return OpenAIEmbedding(**kwargs)
 
         # Provider-specific implementations
         if category == ProviderCategoryEnum.PROVIDER_SPECIFIC:
             # DashScope (Alibaba)
             if provider.litellm_provider == "dashscope":
-                from langchain_community.embeddings import DashScopeEmbeddings
+                from llama_index.embeddings.dashscope import DashScopeEmbedding
 
-                kwargs = {"model": model.name}
+                kwargs = {"model_name": model.name}
                 if provider.api_key:
-                    kwargs["dashscope_api_key"] = provider.api_key
-                return DashScopeEmbeddings(**kwargs)
+                    kwargs["api_key"] = provider.api_key
+                return DashScopeEmbedding(**kwargs)
 
-            # Add other provider-specific implementations here as needed
             raise NotImplementedError(
                 f"Provider-specific embeddings not yet implemented for: {provider.litellm_provider}"
             )
 
         # Local models (HuggingFace)
         if category == ProviderCategoryEnum.LOCAL:
-            from langchain_huggingface import HuggingFaceEmbeddings
+            from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
-            # Default to CPU; sentence-transformers must be installed
             model_name = hf_local_path or model.name
-            return HuggingFaceEmbeddings(
+            return HuggingFaceEmbedding(
                 model_name=model_name,
-                model_kwargs={"device": "cpu"},
-                encode_kwargs={"normalize_embeddings": True},
+                device="cpu",
+                normalize=True,
             )
 
         raise NotImplementedError(
             f"Unsupported provider category for embeddings: {category}"
         )
+
+    def clear_cache(self) -> None:
+        """Clear the embedder cache."""
+        self._embedder_cache.clear()
+        logger.debug("Cleared embedding service cache")
+
+
+# Global singleton instance
+_embedding_service: EmbeddingService | None = None
+
+
+def get_embedding_service() -> EmbeddingService:
+    """Get the global embedding service instance."""
+    global _embedding_service
+    if _embedding_service is None:
+        _embedding_service = EmbeddingService()
+    return _embedding_service

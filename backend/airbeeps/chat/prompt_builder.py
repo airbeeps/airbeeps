@@ -670,20 +670,24 @@ class PromptBuilder:
                 continue
 
             try:
-                relevance_docs = await rag_service.relevance_search(
+                # Use LlamaIndex-based RAG service
+                relevance_results = await rag_service.relevance_search(
                     query=user_query,
                     knowledge_base_id=kb_uuid,
                     k=retrieval_count,
                     fetch_k=fetch_k,
                     score_threshold=score_threshold,
-                    search_type=search_type,
-                    mmr_lambda=mmr_lambda,
-                    multi_query=effective_rag.multi_query,
-                    multi_query_count=effective_rag.multi_query_count,
+                    use_hybrid=effective_rag.hybrid_enabled
+                    if effective_rag.hybrid_enabled is not None
+                    else None,
+                    use_rerank=effective_rag.rerank_top_k is not None
+                    if effective_rag.rerank_top_k
+                    else None,
+                    query_transform="multi_query"
+                    if effective_rag.multi_query
+                    else None,
                     rerank_top_k=effective_rag.rerank_top_k,
                     rerank_model_id=effective_rag.rerank_model_id,
-                    hybrid_enabled=effective_rag.hybrid_enabled,
-                    hybrid_corpus_limit=effective_rag.hybrid_corpus_limit,
                 )
             except Exception as exc:
                 logger.warning(
@@ -694,16 +698,18 @@ class PromptBuilder:
                 )
                 continue
 
-            for doc in relevance_docs:
-                metadata = doc.metadata or {}
-                title = metadata.get("title", "Untitled Document")
-                content = doc.page_content or ""
+            for result in relevance_results:
+                metadata = result.metadata or {}
+                title = result.title or metadata.get("title", "Untitled Document")
+                content = result.content or ""
                 norm = content.strip()
                 if not norm:
                     continue
                 token_count = token_counter.count_text_tokens(norm)
-                score = metadata.get("score") or metadata.get("similarity")
-                chunk_id = metadata.get("chunk_id") or metadata.get("id")
+                score = result.score
+                chunk_id = (
+                    result.chunk_id or metadata.get("chunk_id") or metadata.get("id")
+                )
                 # sha1 is used for deduplication only, not cryptographic purposes
                 hash_key = hashlib.sha1(norm.lower().encode("utf-8")).hexdigest()  # noqa: S324
                 candidates.append(
@@ -766,6 +772,7 @@ class PromptBuilder:
                     "metadata": item["metadata"],
                     "score": item["score"],
                     "snippet": content[:400] + ("..." if len(content) > 400 else ""),
+                    "chunk_id": item["chunk_id"],
                 }
             )
             entry_index += 1
@@ -788,11 +795,13 @@ class PromptBuilder:
                     or entry["title"],
                     "snippet": entry["snippet"],
                     "document_id": entry["metadata"].get("document_id"),
+                    "chunk_id": entry.get("chunk_id"),
                     "file_path": entry["metadata"].get("file_path"),
                     "file_type": entry["metadata"].get("file_type"),
                     "source_url": entry["metadata"].get("source_url"),
                     "sheet": entry["metadata"].get("sheet"),
                     "row_number": entry["metadata"].get("row_number"),
+                    "page_number": entry["metadata"].get("page_number"),
                     "score": entry["score"],
                     "metadata": entry["metadata"],
                 }

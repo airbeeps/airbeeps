@@ -5,6 +5,7 @@ Document content extraction service for RAG system.
 import logging
 import mimetypes
 import os
+import re
 from io import BytesIO
 from pathlib import Path
 
@@ -13,6 +14,57 @@ from fastapi import HTTPException
 from airbeeps.files.service import FileService
 
 logger = logging.getLogger(__name__)
+
+
+def parse_page_range(page_range: str, total_pages: int) -> list[int]:
+    """
+    Parse a page range string into a list of 0-indexed page numbers.
+
+    Args:
+        page_range: Page range string, e.g., '1-5,8,10-12'
+        total_pages: Total number of pages in the document
+
+    Returns:
+        List of 0-indexed page numbers, e.g., [0,1,2,3,4,7,9,10,11]
+
+    Examples:
+        >>> parse_page_range("1-5", 10)
+        [0, 1, 2, 3, 4]
+        >>> parse_page_range("1,3,5-7", 10)
+        [0, 2, 4, 5, 6]
+        >>> parse_page_range("1-100", 10)  # Clamps to available pages
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    """
+    if not page_range or not page_range.strip():
+        return list(range(total_pages))
+
+    pages = set()
+    parts = page_range.replace(" ", "").split(",")
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        if "-" in part:
+            # Range like "1-5"
+            match = re.match(r"^(\d+)-(\d+)$", part)
+            if match:
+                start = int(match.group(1))
+                end = int(match.group(2))
+                # Convert to 0-indexed and clamp
+                start = max(0, start - 1)
+                end = min(total_pages - 1, end - 1)
+                for i in range(start, end + 1):
+                    pages.add(i)
+        else:
+            # Single page like "8"
+            if part.isdigit():
+                page_num = int(part) - 1  # Convert to 0-indexed
+                if 0 <= page_num < total_pages:
+                    pages.add(page_num)
+
+    return sorted(pages)
 
 
 class DocumentContentExtractor:
@@ -169,8 +221,15 @@ class DocumentContentExtractor:
             ".pdf": "application/pdf",
             ".doc": "application/msword",
             ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".ppt": "application/vnd.ms-powerpoint",
+            ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
             ".xls": "application/vnd.ms-excel",
             ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".csv": "text/csv",
+            ".json": "application/json",
+            ".xml": "application/xml",
+            ".html": "text/html",
+            ".htm": "text/html",
         }
         return ext_mapping.get(ext, "text/plain")
 
@@ -294,6 +353,7 @@ class DocumentContentExtractor:
         file_path: str,
         filename: str | None = None,
         max_pages: int | None = None,
+        page_range: str | None = None,
     ) -> tuple[str, str, list[dict]]:
         """
         Extract PDF content with page-level information.
@@ -302,12 +362,15 @@ class DocumentContentExtractor:
             file_path: File storage path
             filename: Original filename
             max_pages: Maximum pages to process
+            page_range: Optional page range string, e.g., '1-50' or '1,3,5-10'
 
         Returns:
             Tuple of (title, full_content, pages_data)
             where pages_data is a list of {"page": int, "text": str}
         """
-        logger.info(f"Extracting PDF with page tracking: {file_path}")
+        logger.info(
+            f"Extracting PDF with page tracking: {file_path}, page_range={page_range}"
+        )
 
         file_data, _ = await self._download_file_from_storage(file_path)
 
@@ -326,10 +389,21 @@ class DocumentContentExtractor:
                 max_pages=max_pages,
             )
 
+            # Determine which pages to include
+            total_pages = len(pdf_doc.pages)
+            if page_range:
+                pages_to_include = set(parse_page_range(page_range, total_pages))
+            else:
+                pages_to_include = set(range(total_pages))
+
             pages_data = []
             full_content_parts = []
 
             for page in pdf_doc.pages:
+                # page.page_number is 1-indexed, convert to 0-indexed for comparison
+                if (page.page_number - 1) not in pages_to_include:
+                    continue
+
                 if page.text.strip():
                     # Add page marker to full content for reference
                     full_content_parts.append(f"[Page {page.page_number}]\n{page.text}")
@@ -343,7 +417,8 @@ class DocumentContentExtractor:
             full_content = "\n\n".join(full_content_parts)
 
             logger.info(
-                f"Extracted {len(pages_data)} pages from PDF, total chars: {len(full_content)}"
+                f"Extracted {len(pages_data)} pages from PDF (of {total_pages} total), "
+                f"total chars: {len(full_content)}"
             )
 
             return title, full_content, pages_data

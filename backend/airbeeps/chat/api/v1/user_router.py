@@ -27,6 +27,8 @@ from .schemas import (
     ConversationResponse,
     ConversationUpdate,
     GenerateTitleResponse,
+    MessageEditRequest,
+    MessageEditResponse,
     MessageFeedbackCreate,
     MessageFeedbackResponse,
     MessageResponse,
@@ -224,6 +226,83 @@ async def get_conversation_messages(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.patch(
+    "/conversations/{conversation_id}/messages/{message_id}/edit",
+    response_model=MessageEditResponse,
+    summary="Edit a user message",
+)
+async def edit_message(
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
+    payload: MessageEditRequest,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_active_user),
+):
+    """
+    Edit a user message and optionally regenerate the assistant response.
+
+    This endpoint:
+    1. Validates the user owns the conversation
+    2. Validates the message is a USER type message
+    3. Stores original content if this is the first edit
+    4. Updates the message content and sets edited_at
+    5. Deletes all messages after the edited message
+    6. Returns the edited message and count of deleted messages
+    """
+    from datetime import datetime, timezone
+
+    # Get conversation to verify ownership
+    service = LangchainChatService(session)
+    conversation = await service.get_conversation(conversation_id, current_user.id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    # Get the message to edit
+    stmt = select(Message).where(
+        Message.id == message_id,
+        Message.conversation_id == conversation_id,
+    )
+    result = await session.execute(stmt)
+    message = result.scalar_one_or_none()
+
+    if not message:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    if message.message_type != MessageTypeEnum.USER:
+        raise HTTPException(status_code=400, detail="Only user messages can be edited")
+
+    # Store original content on first edit
+    if message.original_content is None:
+        message.original_content = message.content
+
+    # Update content and edited_at
+    message.content = payload.content
+    message.edited_at = datetime.now(timezone.utc)
+
+    # Delete all messages after the edited message
+    delete_stmt = select(Message).where(
+        Message.conversation_id == conversation_id,
+        Message.created_at > message.created_at,
+    )
+    result = await session.execute(delete_stmt)
+    messages_to_delete = result.scalars().all()
+    deleted_count = len(messages_to_delete)
+
+    for msg in messages_to_delete:
+        await session.delete(msg)
+
+    # Update conversation message count
+    conversation.message_count = max(0, conversation.message_count - deleted_count)
+
+    await session.commit()
+    await session.refresh(message)
+
+    return MessageEditResponse(
+        message=MessageResponse.model_validate(message),
+        deleted_count=deleted_count,
+    )
+
+
 @router.post(
     "/messages/{message_id}/feedback",
     response_model=MessageFeedbackResponse,
@@ -350,6 +429,8 @@ async def chat_with_assistant(
             content=chat_data.content,
             images=images,
             language=chat_data.language,
+            model_id_override=chat_data.model_id_override,
+            web_search_enabled=chat_data.web_search_enabled,
         ):
             yield f"data: {json.dumps(event)}\n\n"
 

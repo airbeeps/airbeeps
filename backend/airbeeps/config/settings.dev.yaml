@@ -1,0 +1,26 @@
+# Development Environment Configuration
+# This file overrides base settings for local development
+# Merged with settings.yaml, takes precedence
+
+version: "1.0"
+
+vector_store:
+  type: "qdrant"
+  qdrant:
+    url: "http://localhost:6333"
+    persist_dir: "qdrant"
+
+file_storage:
+  backend: "local"
+  local:
+    storage_root: "files"
+
+agent:
+  max_iterations: 15  # Allow more iterations in dev for testing
+  enable_memory: true  # Enable memory in dev
+
+ai_registry:
+  allow_external: true
+
+logging:
+  level: "DEBUG"  # Verbose logging in development

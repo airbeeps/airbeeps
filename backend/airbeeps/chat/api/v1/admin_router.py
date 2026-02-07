@@ -1,5 +1,6 @@
 import uuid
 
+import sqlalchemy
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi_pagination import Page
 from sqlalchemy import select
@@ -19,6 +20,8 @@ from .schemas import (
     ConversationResponse,
     ConversationUpdate,
     DashboardStatsResponse,
+    FeedbackStatsResponse,
+    MessageFeedbackAdminResponse,
     MessageResponse,
 )
 
@@ -464,3 +467,322 @@ async def get_analytics_stats(
         daily_requests=daily_requests,
         daily_latency=daily_latency,
     )
+
+
+# ==================== Feedback Admin Endpoints ====================
+
+
+@router.get(
+    "/feedback",
+    response_model=dict,
+    summary="List message feedback (admin)",
+)
+async def list_feedback(
+    rating: str | None = Query(None, description="Filter by rating (UP/DOWN)"),
+    assistant_id: uuid.UUID | None = Query(None, description="Filter by assistant"),
+    search: str | None = Query(None, description="Search in comment or reasons"),
+    start_date: str | None = Query(None, description="Filter from date (YYYY-MM-DD)"),
+    end_date: str | None = Query(None, description="Filter to date (YYYY-MM-DD)"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    limit: int = Query(25, ge=1, le=100, description="Page size"),
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_active_user),
+):
+    """List all message feedback with filtering and pagination (admin only)."""
+    from datetime import datetime
+
+    from sqlalchemy import func, or_
+
+    from airbeeps.feedback.models import MessageFeedback
+
+    query = (
+        select(MessageFeedback)
+        .options(
+            joinedload(MessageFeedback.user),
+            joinedload(MessageFeedback.assistant),
+            joinedload(MessageFeedback.message),
+        )
+        .order_by(MessageFeedback.created_at.desc())
+    )
+
+    # Apply filters
+    if rating:
+        from airbeeps.feedback.models import MessageFeedbackRatingEnum
+
+        try:
+            rating_enum = MessageFeedbackRatingEnum(rating.upper())
+            query = query.where(MessageFeedback.rating == rating_enum)
+        except ValueError:
+            pass
+
+    if assistant_id:
+        query = query.where(MessageFeedback.assistant_id == assistant_id)
+
+    if search:
+        search_term = f"%{search}%"
+        query = query.where(
+            or_(
+                MessageFeedback.comment.ilike(search_term),
+                func.cast(MessageFeedback.reasons, sqlalchemy.String).ilike(
+                    search_term
+                ),
+            )
+        )
+
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date)
+            query = query.where(MessageFeedback.created_at >= start_dt)
+        except ValueError:
+            pass
+
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date)
+            # Add 1 day to include the end date
+            from datetime import timedelta
+
+            end_dt = end_dt + timedelta(days=1)
+            query = query.where(MessageFeedback.created_at < end_dt)
+        except ValueError:
+            pass
+
+    # Count total
+    count_query = select(func.count(MessageFeedback.id))
+    if rating:
+        from airbeeps.feedback.models import MessageFeedbackRatingEnum
+
+        try:
+            rating_enum = MessageFeedbackRatingEnum(rating.upper())
+            count_query = count_query.where(MessageFeedback.rating == rating_enum)
+        except ValueError:
+            pass
+    if assistant_id:
+        count_query = count_query.where(MessageFeedback.assistant_id == assistant_id)
+    if search:
+        search_term = f"%{search}%"
+        count_query = count_query.where(
+            or_(
+                MessageFeedback.comment.ilike(search_term),
+                func.cast(MessageFeedback.reasons, sqlalchemy.String).ilike(
+                    search_term
+                ),
+            )
+        )
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date)
+            count_query = count_query.where(MessageFeedback.created_at >= start_dt)
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date)
+            from datetime import timedelta
+
+            end_dt = end_dt + timedelta(days=1)
+            count_query = count_query.where(MessageFeedback.created_at < end_dt)
+        except ValueError:
+            pass
+
+    total_result = await session.execute(count_query)
+    total = total_result.scalar() or 0
+
+    # Apply pagination
+    query = query.offset(offset).limit(limit)
+
+    result = await session.execute(query)
+    feedbacks = result.scalars().unique().all()
+
+    # Build response items with extended info
+    items = []
+    for fb in feedbacks:
+        item = MessageFeedbackAdminResponse(
+            id=fb.id,
+            message_id=fb.message_id,
+            conversation_id=fb.conversation_id,
+            assistant_id=fb.assistant_id,
+            user_id=fb.user_id,
+            rating=fb.rating,
+            reasons=fb.reasons or [],
+            comment=fb.comment,
+            extra_data=fb.extra_data or {},
+            created_at=fb.created_at,
+            updated_at=fb.updated_at,
+            user_email=fb.user.email if fb.user else None,
+            user_name=fb.user.name if fb.user else None,
+            assistant_name=fb.assistant.name if fb.assistant else None,
+            message_content=(
+                fb.message.content[:200] + "..."
+                if fb.message and fb.message.content and len(fb.message.content) > 200
+                else (fb.message.content if fb.message else None)
+            ),
+        )
+        items.append(item)
+
+    return {"items": items, "total": total}
+
+
+@router.get(
+    "/feedback/stats",
+    response_model=FeedbackStatsResponse,
+    summary="Get feedback statistics",
+)
+async def get_feedback_stats(
+    days: int = Query(30, ge=1, le=365, description="Number of days to analyze"),
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_active_user),
+):
+    """Get aggregated feedback statistics for admin dashboard."""
+    from collections import Counter
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import func
+
+    from airbeeps.feedback.models import MessageFeedback, MessageFeedbackRatingEnum
+
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    # Get all feedback in period
+    query = select(MessageFeedback).where(MessageFeedback.created_at >= since)
+    result = await session.execute(query)
+    feedbacks = result.scalars().all()
+
+    total_feedback = len(feedbacks)
+    thumbs_up = sum(1 for f in feedbacks if f.rating == MessageFeedbackRatingEnum.UP)
+    thumbs_down = sum(
+        1 for f in feedbacks if f.rating == MessageFeedbackRatingEnum.DOWN
+    )
+
+    # Count by rating
+    feedback_by_rating = {"UP": thumbs_up, "DOWN": thumbs_down}
+
+    # Top reasons
+    all_reasons: list[str] = []
+    for fb in feedbacks:
+        if fb.reasons:
+            all_reasons.extend(fb.reasons)
+    reason_counts = Counter(all_reasons)
+    top_reasons = [
+        {"reason": reason, "count": count}
+        for reason, count in reason_counts.most_common(10)
+    ]
+
+    # Feedback by assistant
+    assistant_query = (
+        select(
+            MessageFeedback.assistant_id,
+            Assistant.name,
+            func.count(MessageFeedback.id).label("total"),
+            func.sum(
+                func.case(
+                    (MessageFeedback.rating == MessageFeedbackRatingEnum.UP, 1), else_=0
+                )
+            ).label("up"),
+            func.sum(
+                func.case(
+                    (MessageFeedback.rating == MessageFeedbackRatingEnum.DOWN, 1),
+                    else_=0,
+                )
+            ).label("down"),
+        )
+        .join(Assistant, MessageFeedback.assistant_id == Assistant.id)
+        .where(MessageFeedback.created_at >= since)
+        .group_by(MessageFeedback.assistant_id, Assistant.name)
+        .order_by(func.count(MessageFeedback.id).desc())
+        .limit(10)
+    )
+    assistant_result = await session.execute(assistant_query)
+    feedback_by_assistant = [
+        {
+            "assistant_id": str(row.assistant_id),
+            "assistant_name": row.name,
+            "total": row.total,
+            "thumbs_up": row.up or 0,
+            "thumbs_down": row.down or 0,
+        }
+        for row in assistant_result.all()
+    ]
+
+    return FeedbackStatsResponse(
+        total_feedback=total_feedback,
+        thumbs_up=thumbs_up,
+        thumbs_down=thumbs_down,
+        period_days=days,
+        feedback_by_rating=feedback_by_rating,
+        top_reasons=top_reasons,
+        feedback_by_assistant=feedback_by_assistant,
+    )
+
+
+@router.get(
+    "/feedback/{feedback_id}",
+    response_model=MessageFeedbackAdminResponse,
+    summary="Get feedback details",
+)
+async def get_feedback(
+    feedback_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_active_user),
+):
+    """Get a specific feedback entry with full details."""
+    from airbeeps.feedback.models import MessageFeedback
+
+    query = (
+        select(MessageFeedback)
+        .options(
+            joinedload(MessageFeedback.user),
+            joinedload(MessageFeedback.assistant),
+            joinedload(MessageFeedback.message),
+        )
+        .where(MessageFeedback.id == feedback_id)
+    )
+
+    result = await session.execute(query)
+    fb = result.scalars().unique().one_or_none()
+
+    if not fb:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+
+    return MessageFeedbackAdminResponse(
+        id=fb.id,
+        message_id=fb.message_id,
+        conversation_id=fb.conversation_id,
+        assistant_id=fb.assistant_id,
+        user_id=fb.user_id,
+        rating=fb.rating,
+        reasons=fb.reasons or [],
+        comment=fb.comment,
+        extra_data=fb.extra_data or {},
+        created_at=fb.created_at,
+        updated_at=fb.updated_at,
+        user_email=fb.user.email if fb.user else None,
+        user_name=fb.user.name if fb.user else None,
+        assistant_name=fb.assistant.name if fb.assistant else None,
+        message_content=fb.message.content if fb.message else None,
+    )
+
+
+@router.delete(
+    "/feedback/{feedback_id}",
+    summary="Delete feedback entry",
+)
+async def delete_feedback(
+    feedback_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_active_user),
+):
+    """Delete a feedback entry (admin only)."""
+    from airbeeps.feedback.models import MessageFeedback
+
+    query = select(MessageFeedback).where(MessageFeedback.id == feedback_id)
+    result = await session.execute(query)
+    fb = result.scalar_one_or_none()
+
+    if not fb:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+
+    await session.delete(fb)
+    await session.commit()
+
+    return {"message": "Feedback deleted successfully"}

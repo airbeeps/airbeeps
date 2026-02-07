@@ -1,5 +1,11 @@
 """
 Agent Execution Engine using LiteLLM
+
+This module provides the main agent execution loop with:
+- Tool loading (local + MCP)
+- Security layer integration
+- Native function calling support
+- Streaming execution
 """
 
 import asyncio
@@ -22,6 +28,8 @@ from .descriptions import (
 )
 from .mcp.registry import mcp_registry
 from .mcp.tools_adapter import MCPToolAdapter
+from .security import ContentFilter, PermissionChecker, InputValidator, OutputValidator
+from .tools.base import AgentToolConfig
 from .tools.knowledge_base import KnowledgeBaseTool
 from .tools.registry import tool_registry
 
@@ -39,13 +47,27 @@ class AgentExecutionEngine:
         assistant: Assistant,
         session: AsyncSession | None = None,
         system_prompt_override: str | None = None,
+        user: Any | None = None,
+        enable_security: bool = True,
     ):
         self.assistant = assistant
         self.session = session
         self.system_prompt_override = system_prompt_override
+        self.user = user
         self.tools: list[AgentTool] = []
         self.llm = None
         self.max_iterations = assistant.agent_max_iterations or 10
+
+        # Security layer
+        self.enable_security = enable_security
+        self.permission_checker = PermissionChecker() if enable_security else None
+        self.content_filter = ContentFilter() if enable_security else None
+        self.input_validator = InputValidator() if enable_security else None
+        self.output_validator = OutputValidator() if enable_security else None
+
+        # Track tool usage for this session
+        self.tool_call_count = 0
+        self.total_cost = 0.0
 
     async def initialize(self):
         """Initialize agent (load LLM and tools)"""
@@ -69,35 +91,70 @@ class AgentExecutionEngine:
         # Load local tools
         await self._load_local_tools()
 
-        # Load MCP tools
-        # await self._load_mcp_tools()
+        # Load MCP tools (now enabled with security)
+        await self._load_mcp_tools()
 
     async def _load_local_tools(self):
         """Load local registered tools"""
         for tool_name in self.assistant.agent_enabled_tools:
             try:
-                # Special handling for knowledge_base tool
-                if tool_name == "knowledge_base_query":
-                    from .tools.base import AgentToolConfig
+                # Build tool config with assistant-specific parameters
+                tool_config = AgentToolConfig(
+                    enabled=True,
+                    parameters=self._get_tool_parameters(tool_name),
+                )
 
-                    config = AgentToolConfig(
-                        enabled=True,
-                        parameters={
-                            "knowledge_base_ids": self.assistant.knowledge_base_ids
-                        },
-                    )
-                    tool = KnowledgeBaseTool(config=config, session=self.session)
+                # Special handling for knowledge_base tools
+                if tool_name in ["knowledge_base_query", "knowledge_base_search"]:
+                    tool_config.parameters["knowledge_base_ids"] = [
+                        str(kb_id) for kb_id in self.assistant.knowledge_base_ids
+                    ]
+
+                    if tool_name == "knowledge_base_query":
+                        tool = KnowledgeBaseTool(
+                            config=tool_config, session=self.session
+                        )
+                    else:
+                        from .tools.knowledge_base import KnowledgeBaseSearchTool
+
+                        tool = KnowledgeBaseSearchTool(
+                            config=tool_config, session=self.session
+                        )
                 else:
-                    tool = tool_registry.get_tool(tool_name)
+                    tool = tool_registry.get_tool(tool_name, tool_config)
+
+                # Check permission if security enabled
+                if self.enable_security and self.permission_checker:
+                    perm_result = await self.permission_checker.can_use_tool(
+                        self.user, tool_name, check_quota=False
+                    )
+                    if not perm_result.allowed:
+                        logger.warning(
+                            f"Tool {tool_name} not allowed for user: {perm_result.reason}"
+                        )
+                        continue
 
                 self.tools.append(tool)
                 logger.info(f"Loaded local tool: {tool_name}")
             except Exception as e:
                 logger.error(f"Failed to load tool {tool_name}: {e}")
 
+    def _get_tool_parameters(self, tool_name: str) -> dict[str, Any]:
+        """Get tool-specific parameters from assistant config"""
+        tool_configs = self.assistant.agent_tool_config or {}
+        return tool_configs.get(tool_name, {})
+
     async def _load_mcp_tools(self):
-        """Load tools from MCP servers"""
-        for mcp_server in self.assistant.mcp_servers:
+        """Load tools from MCP servers with error handling"""
+        # Check if assistant has MCP servers configured
+        try:
+            mcp_servers = self.assistant.mcp_servers
+        except Exception:
+            # Relationship not loaded
+            logger.debug("MCP servers relationship not loaded, skipping")
+            return
+
+        for mcp_server in mcp_servers:
             if not mcp_server.is_active:
                 continue
 
@@ -116,13 +173,27 @@ class AgentExecutionEngine:
                 # Convert to agent tools
                 for tool_info in mcp_tool_list:
                     adapter = MCPToolAdapter(mcp_client=client, tool_info=tool_info)
+
+                    # Check permission if security enabled
+                    if self.enable_security and self.permission_checker:
+                        perm_result = await self.permission_checker.can_use_tool(
+                            self.user, tool_info["name"], check_quota=False
+                        )
+                        if not perm_result.allowed:
+                            logger.warning(
+                                f"MCP tool {tool_info['name']} not allowed: {perm_result.reason}"
+                            )
+                            continue
+
                     self.tools.append(adapter)
                     logger.info(
                         f"Loaded MCP tool: {tool_info['name']} from {mcp_server.name}"
                     )
 
             except Exception as e:
+                # Continue with other servers on failure (graceful degradation)
                 logger.error(f"Failed to load MCP tools from {mcp_server.name}: {e}")
+                continue
 
     def _build_tools_description(self) -> str:
         """Build tools description for the system prompt"""
@@ -148,6 +219,56 @@ class AgentExecutionEngine:
 
         return "\n".join(tools_desc)
 
+    def _build_openai_tools_schema(self) -> list[dict]:
+        """Build OpenAI function calling tools schema"""
+        tools_schema = []
+        for tool in self.tools:
+            if hasattr(tool, "to_openai_tool"):
+                tools_schema.append(tool.to_openai_tool())
+            else:
+                # Fallback for tools without schema
+                tools_schema.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                )
+        return tools_schema
+
+    def _check_provider_supports_function_calling(self) -> bool:
+        """Check if the current provider supports native function calling"""
+        # Most modern providers support it
+        provider = self.assistant.model.provider
+        provider_name = (
+            provider.name.lower()
+            if hasattr(provider, "name")
+            else str(provider).lower()
+        )
+
+        # Known providers with function calling support
+        supported_providers = [
+            "openai",
+            "azure",
+            "anthropic",
+            "google",
+            "gemini",
+            "mistral",
+            "groq",
+            "together",
+            "fireworks",
+            "deepseek",
+        ]
+
+        for supported in supported_providers:
+            if supported in provider_name:
+                return True
+
+        return False
+
     def _build_system_prompt(self) -> str:
         """Build system prompt with tools"""
         base_prompt = (
@@ -162,7 +283,7 @@ class AgentExecutionEngine:
         return base_prompt
 
     async def _execute_tool(self, tool_name: str, tool_input: dict[str, Any]) -> str:
-        """Execute a tool and return the result"""
+        """Execute a tool with security layer wrapping"""
         # Find the tool
         tool = None
         for t in self.tools:
@@ -173,9 +294,72 @@ class AgentExecutionEngine:
         if not tool:
             return f"Error: Tool '{tool_name}' not found"
 
+        user_id = (
+            str(getattr(self.user, "id", "anonymous")) if self.user else "anonymous"
+        )
+
+        # Security Layer 1: Permission check
+        if self.enable_security and self.permission_checker:
+            perm_result = await self.permission_checker.can_use_tool(
+                self.user, tool_name, check_quota=True
+            )
+            if not perm_result.allowed:
+                logger.warning(
+                    f"Permission denied for {tool_name}: {perm_result.reason}"
+                )
+                return f"Error: {perm_result.reason}"
+
+        # Security Layer 2: Input validation
+        if self.enable_security and self.input_validator:
+            validation_result = self.input_validator.validate(tool_input)
+            if not validation_result.valid:
+                logger.warning(
+                    f"Input validation failed for {tool_name}: {validation_result.errors}"
+                )
+                return f"Error: Invalid input - {', '.join(validation_result.errors)}"
+            tool_input = validation_result.sanitized_data or tool_input
+
+        # Security Layer 3: Content filtering
+        if self.enable_security and self.content_filter:
+            filter_result = await self.content_filter.filter_input(
+                tool_name, tool_input
+            )
+            if filter_result.action.value == "block":
+                logger.warning(
+                    f"Input blocked for {tool_name}: {filter_result.warnings}"
+                )
+                return f"Error: Input blocked - {', '.join(filter_result.warnings)}"
+            tool_input = filter_result.modified_content or tool_input
+
         try:
+            # Execute the tool
             result = await tool.execute(**tool_input)
+
+            # Track usage
+            self.tool_call_count += 1
+            if self.enable_security and self.permission_checker:
+                self.permission_checker.record_usage(user_id, tool_name)
+
+            # Security Layer 4: Output filtering
+            if self.enable_security and self.content_filter:
+                output_filter_result = await self.content_filter.filter_output(
+                    tool_name, result
+                )
+                result = output_filter_result.modified_content or str(result)
+
+                if output_filter_result.warnings:
+                    logger.info(
+                        f"Output filtered for {tool_name}: {output_filter_result.warnings}"
+                    )
+
+            # Security Layer 5: Output validation
+            if self.enable_security and self.output_validator:
+                output_validation = self.output_validator.validate(result)
+                if output_validation.sanitized_data:
+                    result = output_validation.sanitized_data
+
             return str(result)
+
         except Exception as e:
             logger.error(f"Tool execution error for {tool_name}: {e}")
             return f"Error executing tool: {e!s}"
@@ -310,6 +494,8 @@ class AgentExecutionEngine:
         try:
             # Match non-agent behavior: optionally use non-streaming calls to capture reasoning,
             # then simulate streaming with small chunks.
+            # VERIFIED: LiteLLM streaming does NOT include reasoning - delta only has provider_specific_fields
+            # Non-streaming (ainvoke) is required to capture message.reasoning
             use_non_streaming_for_reasoning = True
             try:
                 if self.session:
@@ -520,6 +706,8 @@ class AgentExecutionEngine:
                     return
 
                 # Streaming mode (fallback when reasoning display is disabled)
+                # NOTE: Verified that LiteLLM streaming does NOT include reasoning content
+                # delta.__dict__ only contains {'provider_specific_fields': None}
                 last_chunk = None
                 async for chunk in self.llm.astream(messages):
                     if not chunk or not hasattr(chunk, "choices") or not chunk.choices:

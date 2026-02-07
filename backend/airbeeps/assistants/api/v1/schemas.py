@@ -140,13 +140,49 @@ class AssistantBase(BaseModel):
         default=False, description="Whether to enable agent (tool calling) capabilities"
     )
     agent_max_iterations: int = Field(
-        default=5, ge=1, le=20, description="Maximum iterations for agent reasoning"
+        default=10, ge=1, le=50, description="Maximum iterations for agent reasoning"
     )
     agent_enabled_tools: list[str] = Field(
         default_factory=list, description="List of enabled tool names for agent"
     )
     agent_tool_config: dict[str, Any] = Field(
         default_factory=dict, description="Tool configuration parameters for agent"
+    )
+
+    # Agent budget controls
+    agent_token_budget: int = Field(
+        default=8000,
+        ge=1000,
+        le=100000,
+        description="Maximum tokens per conversation turn",
+    )
+    agent_max_tool_calls: int = Field(
+        default=20, ge=1, le=100, description="Maximum tool calls per conversation"
+    )
+    agent_cost_limit_usd: float = Field(
+        default=0.50,
+        ge=0.01,
+        le=10.0,
+        description="Maximum cost per conversation in USD",
+    )
+
+    # Agent behavior settings
+    agent_enable_planning: bool = Field(
+        default=True, description="Enable LLM-based task planning"
+    )
+    agent_enable_reflection: bool = Field(
+        default=True, description="Enable quality reflection after tool use"
+    )
+    agent_reflection_threshold: float = Field(
+        default=7.0,
+        ge=0.0,
+        le=10.0,
+        description="Quality threshold (0-10) for reflection pass",
+    )
+
+    # Memory toggle
+    enable_memory: bool = Field(
+        default=False, description="Enable long-term memory for personalization"
     )
 
 
@@ -225,13 +261,43 @@ class AssistantUpdate(BaseModel):
         None, description="Whether to enable agent (tool calling) capabilities"
     )
     agent_max_iterations: int | None = Field(
-        None, ge=1, le=20, description="Maximum iterations for agent reasoning"
+        None, ge=1, le=50, description="Maximum iterations for agent reasoning"
     )
     agent_enabled_tools: list[str] | None = Field(
         None, description="List of enabled tool names for agent"
     )
     agent_tool_config: dict[str, Any] | None = Field(
         None, description="Tool configuration parameters for agent"
+    )
+
+    # Agent budget controls
+    agent_token_budget: int | None = Field(
+        None, ge=1000, le=100000, description="Maximum tokens per conversation turn"
+    )
+    agent_max_tool_calls: int | None = Field(
+        None, ge=1, le=100, description="Maximum tool calls per conversation"
+    )
+    agent_cost_limit_usd: float | None = Field(
+        None, ge=0.01, le=10.0, description="Maximum cost per conversation in USD"
+    )
+
+    # Agent behavior settings
+    agent_enable_planning: bool | None = Field(
+        None, description="Enable LLM-based task planning"
+    )
+    agent_enable_reflection: bool | None = Field(
+        None, description="Enable quality reflection after tool use"
+    )
+    agent_reflection_threshold: float | None = Field(
+        None,
+        ge=0.0,
+        le=10.0,
+        description="Quality threshold (0-10) for reflection pass",
+    )
+
+    # Memory toggle
+    enable_memory: bool | None = Field(
+        None, description="Enable long-term memory for personalization"
     )
 
 

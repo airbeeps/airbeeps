@@ -23,6 +23,9 @@ async def list_users(
     is_active: bool | None = Query(None, description="Filter by active status"),
     is_verified: bool | None = Query(None, description="Filter by verification status"),
     is_superuser: bool | None = Query(None, description="Filter by superuser status"),
+    role: str | None = Query(
+        None, description="Filter by role (admin, editor, viewer)"
+    ),
     session: AsyncSession = Depends(get_async_session),
 ):
     """
@@ -49,6 +52,10 @@ async def list_users(
 
     if is_superuser is not None:
         query = query.where(User.is_superuser == is_superuser)
+
+    # Role filtering
+    if role:
+        query = query.where(User.role == role)
 
     # Order by creation time descending
     query = query.order_by(User.created_at.desc())
@@ -149,15 +156,50 @@ async def get_user_stats(session: AsyncSession = Depends(get_async_session)):
     )
     verified_users = verified_result.scalar()
 
-    # Admin users
+    # Admin users (superuser)
     admin_result = await session.execute(
         select(func.count(User.id)).where(User.is_superuser.is_(True))
     )
     admin_users = admin_result.scalar()
+
+    # Count by role
+    role_counts = {}
+    for role_val in ["admin", "editor", "viewer"]:
+        role_result = await session.execute(
+            select(func.count(User.id)).where(User.role == role_val)
+        )
+        role_counts[role_val] = role_result.scalar() or 0
 
     return {
         "total_users": total_users,
         "active_users": active_users,
         "verified_users": verified_users,
         "admin_users": admin_users,
+        "by_role": role_counts,
+    }
+
+
+@router.get("/roles/available")
+async def get_available_roles():
+    """
+    Get list of available user roles with descriptions.
+    """
+    return {
+        "roles": [
+            {
+                "id": "admin",
+                "name": "Admin",
+                "description": "Full access to all admin features, can manage users and settings",
+            },
+            {
+                "id": "editor",
+                "name": "Editor",
+                "description": "Can create and edit assistants, knowledge bases, and content",
+            },
+            {
+                "id": "viewer",
+                "name": "Viewer",
+                "description": "Read-only access to admin panel, can view but not modify",
+            },
+        ]
     }

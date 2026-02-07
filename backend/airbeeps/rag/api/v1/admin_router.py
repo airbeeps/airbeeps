@@ -1,10 +1,21 @@
 import logging
 import uuid
+from datetime import datetime
 from io import BytesIO
 from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi_pagination import Page
 from fastapi_pagination.ext.sqlalchemy import paginate as sqlalchemy_paginate
 from pydantic import BaseModel, Field
@@ -24,11 +35,20 @@ from .schemas import (
     DocumentChunkListResponse,
     DocumentCreateFromFile,
     DocumentListResponse,
+    DocumentPreprocessingConfig,
     DocumentResponse,
+    EvaluationRequest,
+    EvaluationResponse,
+    ExcelSheetInfo,
+    ExcelSheetsResponse,
     IngestionJobResponse,
     KnowledgeBaseCreate,
     KnowledgeBaseResponse,
     KnowledgeBaseUpdate,
+    PdfInfoResponse,
+    PipelinePreviewRequest,
+    PipelinePreviewResponse,
+    PreviewRowsResponse,
     RAGQueryRequest,
     RAGQueryResponse,
     RAGRetrievedDocument,
@@ -49,6 +69,7 @@ router = APIRouter()
     description="Admin view all users' knowledge bases",
 )
 async def list_all_knowledge_bases(
+    search: str | None = Query(None, description="Search in name or description"),
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(current_superuser),
 ):
@@ -61,8 +82,17 @@ async def list_all_knowledge_bases(
             select(KnowledgeBase)
             .options(selectinload(KnowledgeBase.embedding_model))
             .where(KnowledgeBase.status == "ACTIVE")
-            .order_by(KnowledgeBase.created_at.desc())
         )
+
+        # Apply search filter
+        if search:
+            search_term = f"%{search}%"
+            query = query.where(
+                (KnowledgeBase.name.ilike(search_term))
+                | (KnowledgeBase.description.ilike(search_term))
+            )
+
+        query = query.order_by(KnowledgeBase.created_at.desc())
 
         def transform_kb(items: list[KnowledgeBase]) -> list[KnowledgeBaseResponse]:
             return [
@@ -174,9 +204,9 @@ async def create_knowledge_base(
             name=kb_data.name,
             description=kb_data.description,
             embedding_model_id=kb_data.embedding_model_id,
-            chunk_size=kb_data.chunk_size,
-            chunk_overlap=kb_data.chunk_overlap,
             owner_id=current_user.id,
+            vector_store_type=kb_data.vector_store_type,
+            retrieval_config=kb_data.retrieval_config,
         )
         logger.info(f"Successfully created knowledge base {kb.id} named '{kb.name}'")
         return kb
@@ -225,7 +255,6 @@ async def update_knowledge_base(
             )
 
         changed = False
-        chunk_params_changed = False
 
         # Allow setting embedding_model_id and mark reindex if it changes
         if kb_data.embedding_model_id is not None:
@@ -246,27 +275,12 @@ async def update_knowledge_base(
                 kb.reindex_required = True
                 changed = True
 
-        # Validate chunk_overlap < chunk_size with the effective values
-        effective_chunk_size = (
-            kb_data.chunk_size if kb_data.chunk_size is not None else kb.chunk_size
-        )
-        effective_chunk_overlap = (
-            kb_data.chunk_overlap
-            if kb_data.chunk_overlap is not None
-            else kb.chunk_overlap
-        )
-        if effective_chunk_overlap >= effective_chunk_size:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="chunk_overlap must be less than chunk_size",
-            )
-
         # Fields allowed to update
         updatable_fields = [
             ("name", kb_data.name),
             ("description", kb_data.description),
-            ("chunk_size", kb_data.chunk_size),
-            ("chunk_overlap", kb_data.chunk_overlap),
+            ("vector_store_type", kb_data.vector_store_type),
+            ("retrieval_config", kb_data.retrieval_config),
         ]
 
         for field_name, new_value in updatable_fields:
@@ -276,16 +290,10 @@ async def update_knowledge_base(
                 )
                 setattr(kb, field_name, new_value)
                 changed = True
-                if field_name in {"chunk_size", "chunk_overlap"}:
-                    chunk_params_changed = True
 
         if not changed:
             logger.debug(f"No changes detected for KB {kb_id}")
             return kb  # Return directly if no changes
-
-        # Mark reindex required if chunk parameters changed
-        if chunk_params_changed:
-            kb.reindex_required = True
 
         await session.commit()
         await session.refresh(kb)
@@ -359,6 +367,84 @@ async def get_knowledge_base_admin(
 
 
 @router.post(
+    "/knowledge-bases/{kb_id}/preview",
+    response_model=PipelinePreviewResponse,
+    summary="Preview RAG pipeline",
+    description="Run a test query against a knowledge base with optional temporary config without saving.",
+)
+async def preview_rag_pipeline(
+    kb_id: uuid.UUID,
+    request: PipelinePreviewRequest,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_superuser),
+):
+    """Preview RAG pipeline with test query and temporary config."""
+    logger.info(f"Admin {current_user.id} previewing pipeline for KB {kb_id}")
+    try:
+        # Verify KB exists
+        result = await session.execute(
+            select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
+        )
+        kb = result.scalar_one_or_none()
+        if not kb:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge base not found"
+            )
+
+        # Build query parameters from request config
+        config = request.rag_config
+        k = config.retrieval_count if config else 5
+        score_threshold = config.similarity_threshold if config else 0.7
+        use_hybrid = config.hybrid_enabled if config else False
+        multi_query = config.multi_query if config else False
+        rerank_top_k = config.rerank_top_k if config else None
+        rerank_model_id = config.rerank_model_id if config else None
+
+        service = RAGService(session)
+        results = await service.relevance_search(
+            query=request.query,
+            knowledge_base_id=kb_id,
+            k=k,
+            score_threshold=score_threshold,
+            use_hybrid=use_hybrid,
+            query_transform="multi_query" if multi_query else None,
+            rerank_top_k=rerank_top_k,
+            rerank_model_id=rerank_model_id,
+        )
+
+        retrieved_docs = [
+            RAGRetrievedDocument(
+                content=result.content,
+                metadata=result.metadata or {},
+                score=result.score,
+                similarity=result.score,
+            )
+            for result in results
+        ]
+
+        return PipelinePreviewResponse(
+            query=request.query,
+            documents=retrieved_docs,
+            config_used={
+                "retrieval_count": k,
+                "similarity_threshold": score_threshold,
+                "hybrid_enabled": use_hybrid,
+                "multi_query": multi_query,
+                "rerank_top_k": rerank_top_k,
+                "rerank_model_id": rerank_model_id,
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Pipeline preview failed for KB {kb_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Pipeline preview failed: {str(e)}",
+        )
+
+
+@router.post(
     "/knowledge-bases/{kb_id}/reindex",
     summary="Reindex knowledge base",
     description="Rebuild all document chunks and vectors using current embedding model and chunk settings.",
@@ -382,6 +468,289 @@ async def reindex_knowledge_base(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to reindex knowledge base",
+        )
+
+
+class KBHealthMetrics(BaseModel):
+    """Knowledge base health metrics."""
+
+    # Document stats
+    total_documents: int
+    active_documents: int
+    failed_documents: int
+    indexing_documents: int
+
+    # Chunk stats
+    total_chunks: int
+    avg_chunks_per_document: float
+    total_tokens: int
+    avg_tokens_per_chunk: float
+
+    # Content stats
+    duplicate_document_count: int
+    unique_file_hashes: int
+
+    # Staleness (time since last update)
+    oldest_document_days: float | None
+    newest_document_days: float | None
+    avg_document_age_days: float | None
+
+    # Coverage (estimated based on chunk content)
+    avg_chunk_length: float
+    min_chunk_length: int
+    max_chunk_length: int
+
+    # Vector store stats
+    vector_collection_exists: bool
+    estimated_vector_count: int | None
+
+    # Quality indicators
+    health_score: float  # 0-100 composite score
+    issues: list[str]  # List of detected issues
+
+
+@router.get(
+    "/knowledge-bases/{kb_id}/health",
+    response_model=KBHealthMetrics,
+    summary="Get KB health metrics",
+    description="Get comprehensive health metrics for a knowledge base including staleness, duplication, and quality indicators.",
+)
+async def get_kb_health_metrics(
+    kb_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_superuser),
+):
+    """Get health metrics for a knowledge base."""
+    logger.info(f"Getting health metrics for KB {kb_id}")
+
+    try:
+        from datetime import timezone
+
+        from sqlalchemy.orm import selectinload
+
+        from airbeeps.rag.index_manager import get_index_manager
+        from airbeeps.rag.models import DocumentChunk
+
+        # Verify KB exists
+        kb = await session.get(KnowledgeBase, kb_id)
+        if not kb or kb.status != "ACTIVE":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Knowledge base not found",
+            )
+
+        # Document stats
+        doc_stats_query = select(
+            func.count(Document.id).label("total"),
+            func.count(Document.id).filter(Document.status == "ACTIVE").label("active"),
+            func.count(Document.id).filter(Document.status == "FAILED").label("failed"),
+            func.count(Document.id)
+            .filter(Document.status == "INDEXING")
+            .label("indexing"),
+        ).where(Document.knowledge_base_id == kb_id)
+
+        doc_stats = await session.execute(doc_stats_query)
+        doc_row = doc_stats.one()
+
+        total_documents = doc_row.total or 0
+        active_documents = doc_row.active or 0
+        failed_documents = doc_row.failed or 0
+        indexing_documents = doc_row.indexing or 0
+
+        # Chunk stats
+        chunk_stats_query = (
+            select(
+                func.count(DocumentChunk.id).label("total"),
+                func.sum(DocumentChunk.token_count).label("total_tokens"),
+                func.avg(DocumentChunk.token_count).label("avg_tokens"),
+                func.avg(func.length(DocumentChunk.content)).label("avg_length"),
+                func.min(func.length(DocumentChunk.content)).label("min_length"),
+                func.max(func.length(DocumentChunk.content)).label("max_length"),
+            )
+            .join(Document, DocumentChunk.document_id == Document.id)
+            .where(
+                and_(
+                    Document.knowledge_base_id == kb_id,
+                    Document.status == "ACTIVE",
+                )
+            )
+        )
+
+        chunk_stats = await session.execute(chunk_stats_query)
+        chunk_row = chunk_stats.one()
+
+        total_chunks = chunk_row.total or 0
+        total_tokens = int(chunk_row.total_tokens or 0)
+        avg_tokens = float(chunk_row.avg_tokens or 0)
+        avg_length = float(chunk_row.avg_length or 0)
+        min_length = int(chunk_row.min_length or 0)
+        max_length = int(chunk_row.max_length or 0)
+
+        avg_chunks_per_doc = total_chunks / max(active_documents, 1)
+
+        # Duplicate detection
+        duplicate_query = select(
+            func.count(func.distinct(Document.file_hash)).label("unique_hashes")
+        ).where(
+            and_(
+                Document.knowledge_base_id == kb_id,
+                Document.status == "ACTIVE",
+                Document.file_hash.isnot(None),
+            )
+        )
+        dup_result = await session.execute(duplicate_query)
+        unique_hashes = dup_result.scalar() or 0
+
+        # Count docs with duplicate hashes
+        dup_count_query = select(func.count(Document.id)).where(
+            and_(
+                Document.knowledge_base_id == kb_id,
+                Document.status == "ACTIVE",
+                Document.file_hash.in_(
+                    select(Document.file_hash)
+                    .where(
+                        and_(
+                            Document.knowledge_base_id == kb_id,
+                            Document.status == "ACTIVE",
+                            Document.file_hash.isnot(None),
+                        )
+                    )
+                    .group_by(Document.file_hash)
+                    .having(func.count(Document.id) > 1)
+                ),
+            )
+        )
+        dup_count_result = await session.execute(dup_count_query)
+        duplicate_count = dup_count_result.scalar() or 0
+
+        # Staleness metrics
+        now = datetime.now(timezone.utc)
+
+        age_query = select(
+            func.min(Document.created_at).label("oldest"),
+            func.max(Document.created_at).label("newest"),
+            func.avg(func.extract("epoch", now - Document.created_at) / 86400).label(
+                "avg_age_days"
+            ),
+        ).where(
+            and_(
+                Document.knowledge_base_id == kb_id,
+                Document.status == "ACTIVE",
+            )
+        )
+
+        age_result = await session.execute(age_query)
+        age_row = age_result.one()
+
+        oldest_days = None
+        newest_days = None
+        avg_age_days = None
+
+        if age_row.oldest:
+            oldest_days = (now - age_row.oldest.replace(tzinfo=timezone.utc)).days
+        if age_row.newest:
+            newest_days = (now - age_row.newest.replace(tzinfo=timezone.utc)).days
+        avg_age_days = (
+            float(age_row.avg_age_days or 0) if age_row.avg_age_days else None
+        )
+
+        # Vector store stats
+        index_manager = get_index_manager()
+        vector_stats = await index_manager.get_collection_stats(
+            kb_id, kb.vector_store_type
+        )
+        vector_exists = (
+            vector_stats.get("exists", False)
+            if isinstance(vector_stats, dict)
+            else False
+        )
+        vector_count = (
+            vector_stats.get("count") if isinstance(vector_stats, dict) else None
+        )
+
+        # Calculate health score and issues
+        issues = []
+        health_score = 100.0
+
+        # Check for failed documents
+        if failed_documents > 0:
+            issues.append(f"{failed_documents} document(s) failed to index")
+            health_score -= min(20, failed_documents * 5)
+
+        # Check for indexing documents (stuck?)
+        if indexing_documents > 0:
+            issues.append(f"{indexing_documents} document(s) still indexing")
+            health_score -= min(10, indexing_documents * 2)
+
+        # Check for duplicates
+        if duplicate_count > 0:
+            issues.append(f"{duplicate_count} duplicate document(s) detected")
+            health_score -= min(15, duplicate_count * 2)
+
+        # Check for stale content (>30 days old)
+        if oldest_days and oldest_days > 30:
+            issues.append(f"Oldest document is {oldest_days} days old")
+            if oldest_days > 90:
+                health_score -= 10
+
+        # Check for reindex required
+        if kb.reindex_required:
+            issues.append("Reindex required due to configuration changes")
+            health_score -= 15
+
+        # Check for empty KB
+        if active_documents == 0:
+            issues.append("No active documents in knowledge base")
+            health_score -= 30
+
+        # Check for no embedding model
+        if not kb.embedding_model_id:
+            issues.append("No embedding model configured")
+            health_score -= 20
+
+        # Vector store mismatch
+        if (
+            total_chunks > 0
+            and vector_count is not None
+            and abs(total_chunks - vector_count) > 10
+        ):
+            issues.append(
+                f"Vector count mismatch: {total_chunks} chunks vs {vector_count} vectors"
+            )
+            health_score -= 10
+
+        health_score = max(0, min(100, health_score))
+
+        return KBHealthMetrics(
+            total_documents=total_documents,
+            active_documents=active_documents,
+            failed_documents=failed_documents,
+            indexing_documents=indexing_documents,
+            total_chunks=total_chunks,
+            avg_chunks_per_document=round(avg_chunks_per_doc, 1),
+            total_tokens=total_tokens,
+            avg_tokens_per_chunk=round(avg_tokens, 1),
+            duplicate_document_count=duplicate_count,
+            unique_file_hashes=unique_hashes,
+            oldest_document_days=oldest_days,
+            newest_document_days=newest_days,
+            avg_document_age_days=round(avg_age_days, 1) if avg_age_days else None,
+            avg_chunk_length=round(avg_length, 1),
+            min_chunk_length=min_length,
+            max_chunk_length=max_length,
+            vector_collection_exists=vector_exists,
+            estimated_vector_count=vector_count,
+            health_score=round(health_score, 1),
+            issues=issues,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get health metrics for KB {kb_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get health metrics",
         )
 
 
@@ -529,6 +898,584 @@ async def bulk_delete_documents(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete documents",
+        )
+
+
+# =============================================================================
+# KB Bulk Operations (Phase 2)
+# =============================================================================
+
+
+class BulkReindexRequest(BaseModel):
+    """Request for bulk document reindex."""
+
+    document_ids: list[uuid.UUID] = Field(
+        ..., min_length=1, description="Document IDs to reindex"
+    )
+
+
+class MoveDocumentsRequest(BaseModel):
+    """Request to move documents between KBs."""
+
+    document_ids: list[uuid.UUID] = Field(
+        ..., min_length=1, description="Document IDs to move"
+    )
+    target_kb_id: uuid.UUID = Field(..., description="Target knowledge base ID")
+
+
+class DuplicateInfo(BaseModel):
+    """Information about a duplicate document."""
+
+    document_id: uuid.UUID
+    title: str
+    file_hash: str
+    duplicate_count: int
+    duplicate_ids: list[uuid.UUID]
+
+
+@router.post(
+    "/knowledge-bases/{kb_id}/documents/bulk-reindex",
+    summary="Bulk reindex selected documents",
+    description="Reindex specific documents in a knowledge base without reindexing the entire KB.",
+)
+async def bulk_reindex_documents(
+    kb_id: uuid.UUID,
+    req: BulkReindexRequest,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_superuser),
+):
+    """Reindex selected documents in a KB."""
+    logger.info(
+        f"Bulk reindexing {len(req.document_ids)} documents in KB {kb_id} by user {current_user.id}"
+    )
+
+    try:
+        # Verify KB exists
+        kb = await session.get(KnowledgeBase, kb_id)
+        if not kb or kb.status != "ACTIVE":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Knowledge base not found",
+            )
+
+        if not kb.embedding_model_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Knowledge base has no embedding model configured",
+            )
+
+        from sqlalchemy.orm import selectinload
+
+        from airbeeps.rag.doc_processor import get_document_processor
+        from airbeeps.rag.embeddings import get_embedding_service
+        from airbeeps.rag.index_manager import get_index_manager
+        from airbeeps.rag.models import DocumentChunk
+
+        embedding_service = get_embedding_service()
+        index_manager = get_index_manager()
+
+        # Get embedding model
+        embed_model, embed_info = await embedding_service.get_embed_model_with_info(
+            str(kb.embedding_model_id)
+        )
+        embed_dim = embed_info.get("embed_dim", 384)
+        doc_processor = get_document_processor(embed_model=embed_model)
+
+        reindexed_count = 0
+        errors = []
+
+        for doc_id in req.document_ids:
+            try:
+                # Load document with chunks
+                result = await session.execute(
+                    select(Document)
+                    .options(selectinload(Document.chunks))
+                    .where(
+                        and_(
+                            Document.id == doc_id,
+                            Document.knowledge_base_id == kb_id,
+                            Document.status == "ACTIVE",
+                        )
+                    )
+                )
+                document = result.scalar_one_or_none()
+
+                if not document:
+                    errors.append(
+                        {"document_id": str(doc_id), "error": "Document not found"}
+                    )
+                    continue
+
+                # Delete old vectors
+                chunk_ids = [str(c.id) for c in document.chunks]
+                if chunk_ids:
+                    await index_manager.delete_nodes(
+                        kb_id=kb_id,
+                        node_ids=chunk_ids,
+                        store_type=kb.vector_store_type,
+                    )
+
+                # Delete old chunk records
+                for chunk in list(document.chunks):
+                    await session.delete(chunk)
+
+                # Reprocess document
+                from airbeeps.config import settings
+
+                nodes = doc_processor.process_text(
+                    content=document.content,
+                    metadata={
+                        "document_id": str(document.id),
+                        "knowledge_base_id": str(kb_id),
+                        "title": document.title,
+                        **embed_info,
+                    },
+                    use_semantic=settings.RAG_ENABLE_SEMANTIC_CHUNKING,
+                    use_hierarchical=settings.RAG_ENABLE_HIERARCHICAL,
+                )
+
+                # Create new chunk records
+                chunk_records = []
+                for i, node in enumerate(nodes):
+                    chunk_record = DocumentChunk(
+                        content=node.get_content(),
+                        chunk_index=i,
+                        token_count=len(node.get_content().split()),
+                        document_id=document.id,
+                        chunk_metadata={"node_id": node.node_id, **node.metadata},
+                    )
+                    chunk_records.append(chunk_record)
+                    session.add(chunk_record)
+
+                await session.flush()
+
+                # Update node IDs
+                for chunk_record, node in zip(chunk_records, nodes, strict=False):
+                    node.node_id = str(chunk_record.id)
+                    node.metadata["chunk_id"] = str(chunk_record.id)
+
+                # Index nodes
+                await index_manager.add_nodes(
+                    kb_id=kb_id,
+                    nodes=nodes,
+                    embed_model=embed_model,
+                    store_type=kb.vector_store_type,
+                    embed_dim=embed_dim,
+                )
+
+                reindexed_count += 1
+                logger.debug(f"Reindexed document {doc_id} with {len(nodes)} chunks")
+
+            except Exception as e:
+                logger.error(f"Failed to reindex document {doc_id}: {e}", exc_info=True)
+                errors.append({"document_id": str(doc_id), "error": str(e)})
+
+        await session.commit()
+
+        return {
+            "reindexed_count": reindexed_count,
+            "total_requested": len(req.document_ids),
+            "errors": errors,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        await session.rollback()
+        logger.error(
+            f"Failed to bulk reindex documents in KB {kb_id}: {e}", exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to reindex documents",
+        )
+
+
+@router.post(
+    "/knowledge-bases/{kb_id}/documents/move",
+    summary="Move documents to another KB",
+    description="Move documents from one knowledge base to another. Vectors are re-embedded for the target KB.",
+)
+async def move_documents_to_kb(
+    kb_id: uuid.UUID,
+    req: MoveDocumentsRequest,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_superuser),
+):
+    """Move documents to a different knowledge base."""
+    logger.info(
+        f"Moving {len(req.document_ids)} documents from KB {kb_id} to KB {req.target_kb_id}"
+    )
+
+    if kb_id == req.target_kb_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Source and target knowledge bases are the same",
+        )
+
+    try:
+        # Verify source KB
+        source_kb = await session.get(KnowledgeBase, kb_id)
+        if not source_kb or source_kb.status != "ACTIVE":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source knowledge base not found",
+            )
+
+        # Verify target KB
+        target_kb = await session.get(KnowledgeBase, req.target_kb_id)
+        if not target_kb or target_kb.status != "ACTIVE":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Target knowledge base not found",
+            )
+
+        if not target_kb.embedding_model_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Target knowledge base has no embedding model configured",
+            )
+
+        from sqlalchemy.orm import selectinload
+
+        from airbeeps.rag.doc_processor import get_document_processor
+        from airbeeps.rag.embeddings import get_embedding_service
+        from airbeeps.rag.index_manager import get_index_manager
+        from airbeeps.rag.models import DocumentChunk
+
+        embedding_service = get_embedding_service()
+        index_manager = get_index_manager()
+
+        # Get target embedding model
+        embed_model, embed_info = await embedding_service.get_embed_model_with_info(
+            str(target_kb.embedding_model_id)
+        )
+        embed_dim = embed_info.get("embed_dim", 384)
+        doc_processor = get_document_processor(embed_model=embed_model)
+
+        moved_count = 0
+        errors = []
+
+        for doc_id in req.document_ids:
+            try:
+                # Load document with chunks
+                result = await session.execute(
+                    select(Document)
+                    .options(selectinload(Document.chunks))
+                    .where(
+                        and_(
+                            Document.id == doc_id,
+                            Document.knowledge_base_id == kb_id,
+                            Document.status == "ACTIVE",
+                        )
+                    )
+                )
+                document = result.scalar_one_or_none()
+
+                if not document:
+                    errors.append(
+                        {"document_id": str(doc_id), "error": "Document not found"}
+                    )
+                    continue
+
+                # Delete old vectors from source KB
+                chunk_ids = [str(c.id) for c in document.chunks]
+                if chunk_ids:
+                    await index_manager.delete_nodes(
+                        kb_id=kb_id,
+                        node_ids=chunk_ids,
+                        store_type=source_kb.vector_store_type,
+                    )
+
+                # Delete old chunk records
+                for chunk in list(document.chunks):
+                    await session.delete(chunk)
+
+                # Update document KB reference
+                document.knowledge_base_id = req.target_kb_id
+
+                # Reprocess for target KB
+                from airbeeps.config import settings
+
+                nodes = doc_processor.process_text(
+                    content=document.content,
+                    metadata={
+                        "document_id": str(document.id),
+                        "knowledge_base_id": str(req.target_kb_id),
+                        "title": document.title,
+                        **embed_info,
+                    },
+                    use_semantic=settings.RAG_ENABLE_SEMANTIC_CHUNKING,
+                    use_hierarchical=settings.RAG_ENABLE_HIERARCHICAL,
+                )
+
+                # Create new chunk records
+                chunk_records = []
+                for i, node in enumerate(nodes):
+                    chunk_record = DocumentChunk(
+                        content=node.get_content(),
+                        chunk_index=i,
+                        token_count=len(node.get_content().split()),
+                        document_id=document.id,
+                        chunk_metadata={"node_id": node.node_id, **node.metadata},
+                    )
+                    chunk_records.append(chunk_record)
+                    session.add(chunk_record)
+
+                await session.flush()
+
+                # Update node IDs
+                for chunk_record, node in zip(chunk_records, nodes, strict=False):
+                    node.node_id = str(chunk_record.id)
+                    node.metadata["chunk_id"] = str(chunk_record.id)
+
+                # Index in target KB
+                await index_manager.add_nodes(
+                    kb_id=req.target_kb_id,
+                    nodes=nodes,
+                    embed_model=embed_model,
+                    store_type=target_kb.vector_store_type,
+                    embed_dim=embed_dim,
+                )
+
+                moved_count += 1
+                logger.debug(f"Moved document {doc_id} to KB {req.target_kb_id}")
+
+            except Exception as e:
+                logger.error(f"Failed to move document {doc_id}: {e}", exc_info=True)
+                errors.append({"document_id": str(doc_id), "error": str(e)})
+
+        await session.commit()
+
+        return {
+            "moved_count": moved_count,
+            "total_requested": len(req.document_ids),
+            "target_kb_id": str(req.target_kb_id),
+            "errors": errors,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Failed to move documents: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to move documents",
+        )
+
+
+@router.get(
+    "/knowledge-bases/{kb_id}/duplicates",
+    response_model=list[DuplicateInfo],
+    summary="Detect duplicate documents in KB",
+    description="Find documents with identical file hashes (duplicate content) in a knowledge base.",
+)
+async def detect_duplicate_documents(
+    kb_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_superuser),
+):
+    """Detect duplicate documents based on file hash."""
+    logger.info(f"Detecting duplicates in KB {kb_id}")
+
+    try:
+        # Verify KB exists
+        kb = await session.get(KnowledgeBase, kb_id)
+        if not kb or kb.status != "ACTIVE":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Knowledge base not found",
+            )
+
+        # Find documents with duplicate file hashes
+        # First, get all file hashes that appear more than once
+        from sqlalchemy import literal_column
+
+        duplicate_hashes_query = (
+            select(
+                Document.file_hash,
+                func.count(Document.id).label("count"),
+            )
+            .where(
+                and_(
+                    Document.knowledge_base_id == kb_id,
+                    Document.status == "ACTIVE",
+                    Document.file_hash.isnot(None),
+                )
+            )
+            .group_by(Document.file_hash)
+            .having(func.count(Document.id) > 1)
+        )
+
+        result = await session.execute(duplicate_hashes_query)
+        duplicate_hashes = {row[0]: row[1] for row in result.all()}
+
+        if not duplicate_hashes:
+            return []
+
+        # Get documents for each duplicate hash
+        duplicates = []
+        for file_hash, count in duplicate_hashes.items():
+            docs_result = await session.execute(
+                select(Document)
+                .where(
+                    and_(
+                        Document.knowledge_base_id == kb_id,
+                        Document.file_hash == file_hash,
+                        Document.status == "ACTIVE",
+                    )
+                )
+                .order_by(Document.created_at.asc())
+            )
+            docs = docs_result.scalars().all()
+
+            if docs:
+                # First document is the "original", rest are duplicates
+                original = docs[0]
+                duplicate_ids = [d.id for d in docs[1:]]
+
+                duplicates.append(
+                    DuplicateInfo(
+                        document_id=original.id,
+                        title=original.title,
+                        file_hash=file_hash,
+                        duplicate_count=len(duplicate_ids),
+                        duplicate_ids=duplicate_ids,
+                    )
+                )
+
+        logger.info(f"Found {len(duplicates)} documents with duplicates in KB {kb_id}")
+        return duplicates
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to detect duplicates in KB {kb_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to detect duplicates",
+        )
+
+
+@router.post(
+    "/knowledge-bases/{kb_id}/deduplicate",
+    summary="Remove duplicate documents",
+    description="Remove duplicate documents from a KB, keeping the oldest version of each.",
+)
+async def remove_duplicate_documents(
+    kb_id: uuid.UUID,
+    keep_strategy: str = Query(
+        default="oldest", description="Which duplicate to keep: oldest or newest"
+    ),
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_superuser),
+):
+    """Remove duplicate documents, keeping one copy based on strategy."""
+    logger.info(f"Deduplicating KB {kb_id} with strategy: {keep_strategy}")
+
+    if keep_strategy not in ["oldest", "newest"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="keep_strategy must be 'oldest' or 'newest'",
+        )
+
+    try:
+        # Get duplicates
+        kb = await session.get(KnowledgeBase, kb_id)
+        if not kb or kb.status != "ACTIVE":
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Knowledge base not found",
+            )
+
+        # Find duplicate hashes
+        duplicate_hashes_query = (
+            select(Document.file_hash)
+            .where(
+                and_(
+                    Document.knowledge_base_id == kb_id,
+                    Document.status == "ACTIVE",
+                    Document.file_hash.isnot(None),
+                )
+            )
+            .group_by(Document.file_hash)
+            .having(func.count(Document.id) > 1)
+        )
+
+        result = await session.execute(duplicate_hashes_query)
+        duplicate_hashes = [row[0] for row in result.all()]
+
+        if not duplicate_hashes:
+            return {"removed_count": 0, "message": "No duplicates found"}
+
+        from airbeeps.rag.index_manager import get_index_manager
+        from airbeeps.rag.models import DocumentChunk
+
+        index_manager = get_index_manager()
+        removed_count = 0
+
+        for file_hash in duplicate_hashes:
+            # Get all docs with this hash, ordered by creation time
+            order_by = (
+                Document.created_at.asc()
+                if keep_strategy == "oldest"
+                else Document.created_at.desc()
+            )
+
+            docs_result = await session.execute(
+                select(Document)
+                .where(
+                    and_(
+                        Document.knowledge_base_id == kb_id,
+                        Document.file_hash == file_hash,
+                        Document.status == "ACTIVE",
+                    )
+                )
+                .order_by(order_by)
+            )
+            docs = docs_result.scalars().all()
+
+            # Keep first, delete rest
+            for doc in docs[1:]:
+                # Get chunk IDs for vector deletion
+                chunks_result = await session.execute(
+                    select(DocumentChunk.id).where(DocumentChunk.document_id == doc.id)
+                )
+                chunk_ids = [str(cid) for (cid,) in chunks_result.all()]
+
+                if chunk_ids:
+                    try:
+                        await index_manager.delete_nodes(
+                            kb_id=kb_id,
+                            node_ids=chunk_ids,
+                            store_type=kb.vector_store_type,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to delete vectors for doc {doc.id}: {e}"
+                        )
+
+                doc.status = "DELETED"
+                removed_count += 1
+                logger.debug(f"Marked duplicate document {doc.id} as deleted")
+
+        await session.commit()
+
+        return {
+            "removed_count": removed_count,
+            "unique_hashes_processed": len(duplicate_hashes),
+            "message": f"Removed {removed_count} duplicate documents",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Failed to deduplicate KB {kb_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to deduplicate",
         )
 
 
@@ -761,6 +1708,236 @@ async def preview_excel_row(
         )
 
 
+# =============================================================================
+# Document Preprocessing Endpoints (Smart Document Preprocessing)
+# =============================================================================
+
+
+@router.post(
+    "/documents/pdf-info",
+    response_model=PdfInfoResponse,
+    summary="Get PDF file information",
+    description="Upload a PDF and get page count, size, and text detection info for preprocessing.",
+)
+async def get_pdf_info(
+    file: UploadFile = File(...),
+    current_user: User = Depends(current_superuser),
+):
+    """Return PDF page count, file size, has_text (vs scanned)."""
+    logger.debug(f"Getting PDF info for file '{file.filename}'")
+
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be a PDF",
+        )
+
+    try:
+        contents = await file.read()
+        file_size = len(contents)
+        buffer = BytesIO(contents)
+
+        # Try to get PDF info
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            from PyPDF2 import PdfReader
+
+        reader = PdfReader(buffer)
+        page_count = len(reader.pages)
+
+        # Check if PDF has extractable text (not just scanned)
+        has_text = False
+        for i, page in enumerate(reader.pages[:3]):  # Check first 3 pages
+            text = page.extract_text() or ""
+            if len(text.strip()) > 50:  # At least 50 chars of text
+                has_text = True
+                break
+
+        # Get metadata
+        metadata = reader.metadata or {}
+        title = metadata.get("/Title") if metadata else None
+        author = metadata.get("/Author") if metadata else None
+        is_encrypted = reader.is_encrypted
+
+        return PdfInfoResponse(
+            page_count=page_count,
+            file_size_bytes=file_size,
+            has_text=has_text,
+            title=str(title) if title else None,
+            author=str(author) if author else None,
+            is_encrypted=is_encrypted,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get PDF info: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to analyze PDF: {e!s}",
+        )
+
+
+@router.post(
+    "/documents/excel-sheets",
+    response_model=ExcelSheetsResponse,
+    summary="Get Excel file sheet information",
+    description="Upload an Excel file and get list of sheets with row counts.",
+)
+async def get_excel_sheets(
+    file: UploadFile = File(...),
+    current_user: User = Depends(current_superuser),
+):
+    """Return list of sheet names with row/column counts."""
+    logger.debug(f"Getting Excel sheets for file '{file.filename}'")
+
+    filename = file.filename or ""
+    if not any(filename.lower().endswith(ext) for ext in [".xlsx", ".xls", ".csv"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be an Excel (.xlsx, .xls) or CSV file",
+        )
+
+    try:
+        contents = await file.read()
+        buffer = BytesIO(contents)
+
+        if filename.lower().endswith(".csv"):
+            # CSV is a single "sheet"
+            df = pd.read_csv(buffer, nrows=0)  # Just read headers
+            buffer.seek(0)
+            row_count = sum(1 for _ in buffer) - 1  # Count lines minus header
+            columns = [str(c) for c in df.columns]
+
+            return ExcelSheetsResponse(
+                sheets=[
+                    ExcelSheetInfo(
+                        name="Sheet1",
+                        row_count=max(0, row_count),
+                        column_count=len(columns),
+                        columns=columns,
+                    )
+                ],
+                file_name=filename,
+            )
+
+        # Excel file - read all sheets
+        sheets_dict = pd.read_excel(buffer, sheet_name=None, nrows=0)
+        buffer.seek(0)
+
+        # Get row counts for each sheet
+        sheet_infos = []
+        all_sheets = pd.read_excel(buffer, sheet_name=None)
+
+        for sheet_name, df in all_sheets.items():
+            df = df.dropna(axis=1, how="all")
+            columns = [str(c) for c in df.columns]
+            sheet_infos.append(
+                ExcelSheetInfo(
+                    name=str(sheet_name),
+                    row_count=len(df),
+                    column_count=len(columns),
+                    columns=columns,
+                )
+            )
+
+        return ExcelSheetsResponse(
+            sheets=sheet_infos,
+            file_name=filename,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get Excel sheets: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to analyze Excel file: {e!s}",
+        )
+
+
+@router.post(
+    "/documents/preview-rows",
+    response_model=PreviewRowsResponse,
+    summary="Preview rows from Excel/CSV file",
+    description="Upload an Excel/CSV file and get first N rows for preview.",
+)
+async def preview_rows(
+    file: UploadFile = File(...),
+    sheet: str | None = Form(default=None),
+    header_row: int = Form(default=0),
+    skip_rows: int = Form(default=0),
+    limit: int = Form(default=10),
+    current_user: User = Depends(current_superuser),
+):
+    """Return first N rows as JSON for preview."""
+    logger.debug(f"Previewing rows from file '{file.filename}'")
+
+    filename = file.filename or ""
+    if not any(filename.lower().endswith(ext) for ext in [".xlsx", ".xls", ".csv"]):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File must be an Excel (.xlsx, .xls) or CSV file",
+        )
+
+    try:
+        contents = await file.read()
+        buffer = BytesIO(contents)
+
+        if filename.lower().endswith(".csv"):
+            df = pd.read_csv(
+                buffer,
+                header=header_row,
+                skiprows=range(1, skip_rows + 1) if skip_rows else None,
+            )
+            sheet_name = "Sheet1"
+        else:
+            sheets = pd.read_excel(buffer, sheet_name=None, header=header_row)
+            if not sheets:
+                raise ValueError("No sheets found in Excel file")
+
+            sheet_name = (
+                sheet if sheet and sheet in sheets else next(iter(sheets.keys()))
+            )
+            df = sheets[sheet_name]
+
+            # Apply skip_rows after header
+            if skip_rows > 0:
+                df = df.iloc[skip_rows:]
+
+        df = df.dropna(axis=1, how="all")
+        total_rows = len(df)
+
+        # Limit rows for preview
+        df = df.head(limit)
+
+        # Clean up values
+        def _clean(val):
+            if pd.isna(val):
+                return None
+            if isinstance(val, float) and val.is_integer():
+                return int(val)
+            return val
+
+        rows = []
+        for _, row in df.iterrows():
+            row_dict = {str(col): _clean(val) for col, val in row.items()}
+            rows.append(row_dict)
+
+        columns = [str(c) for c in df.columns]
+
+        return PreviewRowsResponse(
+            sheet_name=sheet_name,
+            rows=rows,
+            columns=columns,
+            total_rows=total_rows,
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to preview rows: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to preview rows: {e!s}",
+        )
+
+
 @router.get(
     "/documents/{doc_id}/chunks",
     response_model=Page[DocumentChunkListResponse],
@@ -820,6 +1997,373 @@ async def get_document_chunks(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to retrieve document chunks",
+        )
+
+
+# =============================================================================
+# Chunk Viewer Enhancements (Phase 2)
+# =============================================================================
+
+
+class ChunkSearchResult(BaseModel):
+    """Search result for chunk content search."""
+
+    chunk_id: uuid.UUID
+    document_id: uuid.UUID
+    document_title: str
+    chunk_index: int
+    content: str
+    content_preview: str  # First 200 chars with search term highlighted
+    match_count: int
+    token_count: int | None
+    metadata: dict[str, Any] = {}
+
+
+class ChunkDetailResponse(BaseModel):
+    """Detailed chunk information."""
+
+    id: uuid.UUID
+    document_id: uuid.UUID
+    document_title: str
+    chunk_index: int
+    content: str
+    token_count: int | None
+    metadata: dict[str, Any] = {}
+
+    # Navigation
+    prev_chunk_id: uuid.UUID | None
+    next_chunk_id: uuid.UUID | None
+
+    # Hierarchical info
+    parent_chunk_id: uuid.UUID | None
+    child_chunk_ids: list[uuid.UUID] = []
+
+
+@router.get(
+    "/documents/{doc_id}/chunks/search",
+    response_model=list[ChunkSearchResult],
+    summary="Search within document chunks",
+    description="Search for text within chunks of a specific document.",
+)
+async def search_document_chunks(
+    doc_id: uuid.UUID,
+    q: str = Query(..., min_length=1, description="Search query"),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_superuser),
+):
+    """Search for text within document chunks."""
+    logger.debug(f"Searching chunks in document {doc_id} for: {q}")
+
+    try:
+        from airbeeps.rag.models import DocumentChunk
+
+        # Verify document exists
+        doc_result = await session.execute(
+            select(Document).where(
+                and_(Document.id == doc_id, Document.status == "ACTIVE")
+            )
+        )
+        document = doc_result.scalar_one_or_none()
+        if not document:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found",
+            )
+
+        # Search chunks using ILIKE for case-insensitive search
+        query = (
+            select(DocumentChunk)
+            .where(
+                and_(
+                    DocumentChunk.document_id == doc_id,
+                    DocumentChunk.content.ilike(f"%{q}%"),
+                )
+            )
+            .order_by(DocumentChunk.chunk_index.asc())
+            .limit(limit)
+        )
+
+        result = await session.execute(query)
+        chunks = result.scalars().all()
+
+        # Build results with match highlighting
+        results = []
+        for chunk in chunks:
+            content = chunk.content
+            q_lower = q.lower()
+            content_lower = content.lower()
+
+            # Count matches
+            match_count = content_lower.count(q_lower)
+
+            # Create preview with context around first match
+            first_match_idx = content_lower.find(q_lower)
+            if first_match_idx >= 0:
+                start = max(0, first_match_idx - 50)
+                end = min(len(content), first_match_idx + len(q) + 150)
+                preview = content[start:end]
+                if start > 0:
+                    preview = "..." + preview
+                if end < len(content):
+                    preview = preview + "..."
+            else:
+                preview = content[:200] + ("..." if len(content) > 200 else "")
+
+            results.append(
+                ChunkSearchResult(
+                    chunk_id=chunk.id,
+                    document_id=doc_id,
+                    document_title=document.title,
+                    chunk_index=chunk.chunk_index,
+                    content=content,
+                    content_preview=preview,
+                    match_count=match_count,
+                    token_count=chunk.token_count,
+                    metadata=chunk.chunk_metadata or {},
+                )
+            )
+
+        return results
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to search chunks in document {doc_id}: {e}", exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to search chunks",
+        )
+
+
+@router.get(
+    "/chunks/{chunk_id}",
+    response_model=ChunkDetailResponse,
+    summary="Get chunk details with navigation",
+    description="Get detailed chunk information including prev/next navigation and hierarchy.",
+)
+async def get_chunk_detail(
+    chunk_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_superuser),
+):
+    """Get detailed chunk information with navigation."""
+    logger.debug(f"Getting chunk detail for {chunk_id}")
+
+    try:
+        from airbeeps.rag.models import DocumentChunk
+
+        # Get the chunk
+        chunk = await session.get(DocumentChunk, chunk_id)
+        if not chunk:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Chunk not found",
+            )
+
+        # Get document
+        document = await session.get(Document, chunk.document_id)
+        if not document:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found",
+            )
+
+        # Get prev/next chunks
+        prev_chunk = None
+        next_chunk = None
+
+        if chunk.chunk_index > 0:
+            prev_result = await session.execute(
+                select(DocumentChunk.id).where(
+                    and_(
+                        DocumentChunk.document_id == chunk.document_id,
+                        DocumentChunk.chunk_index == chunk.chunk_index - 1,
+                    )
+                )
+            )
+            prev_id = prev_result.scalar_one_or_none()
+            if prev_id:
+                prev_chunk = prev_id
+
+        next_result = await session.execute(
+            select(DocumentChunk.id).where(
+                and_(
+                    DocumentChunk.document_id == chunk.document_id,
+                    DocumentChunk.chunk_index == chunk.chunk_index + 1,
+                )
+            )
+        )
+        next_id = next_result.scalar_one_or_none()
+        if next_id:
+            next_chunk = next_id
+
+        # Extract hierarchical info from metadata
+        metadata = chunk.chunk_metadata or {}
+        parent_chunk_id = None
+        child_chunk_ids = []
+
+        if metadata.get("parent_node_id"):
+            try:
+                parent_chunk_id = uuid.UUID(metadata["parent_node_id"])
+            except (ValueError, TypeError):
+                pass
+
+        if metadata.get("child_node_ids"):
+            for child_id in metadata["child_node_ids"]:
+                try:
+                    child_chunk_ids.append(uuid.UUID(child_id))
+                except (ValueError, TypeError):
+                    pass
+
+        return ChunkDetailResponse(
+            id=chunk.id,
+            document_id=chunk.document_id,
+            document_title=document.title,
+            chunk_index=chunk.chunk_index,
+            content=chunk.content,
+            token_count=chunk.token_count,
+            metadata=metadata,
+            prev_chunk_id=prev_chunk,
+            next_chunk_id=next_chunk,
+            parent_chunk_id=parent_chunk_id,
+            child_chunk_ids=child_chunk_ids,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get chunk detail for {chunk_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get chunk detail",
+        )
+
+
+@router.post(
+    "/documents/{doc_id}/reindex-from-chunks",
+    summary="Reindex document from existing chunks",
+    description="Re-embed and re-index a document using its existing chunks (useful after vector store reset).",
+)
+async def reindex_document_from_chunks(
+    doc_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_superuser),
+):
+    """Reindex a document using its existing chunks without re-chunking."""
+    logger.info(f"Reindexing document {doc_id} from existing chunks")
+
+    try:
+        from sqlalchemy.orm import selectinload
+
+        from airbeeps.rag.embeddings import get_embedding_service
+        from airbeeps.rag.index_manager import get_index_manager
+        from airbeeps.rag.models import DocumentChunk
+
+        # Load document with chunks
+        result = await session.execute(
+            select(Document)
+            .options(
+                selectinload(Document.chunks), selectinload(Document.knowledge_base)
+            )
+            .where(and_(Document.id == doc_id, Document.status == "ACTIVE"))
+        )
+        document = result.scalar_one_or_none()
+
+        if not document:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found",
+            )
+
+        kb = document.knowledge_base
+        if not kb or kb.status != "ACTIVE":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Knowledge base not found or inactive",
+            )
+
+        if not kb.embedding_model_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Knowledge base has no embedding model configured",
+            )
+
+        if not document.chunks:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Document has no chunks to reindex",
+            )
+
+        embedding_service = get_embedding_service()
+        index_manager = get_index_manager()
+
+        # Get embedding model
+        embed_model, embed_info = await embedding_service.get_embed_model_with_info(
+            str(kb.embedding_model_id)
+        )
+        embed_dim = embed_info.get("embed_dim", 384)
+
+        # Delete existing vectors (if any)
+        chunk_ids = [str(c.id) for c in document.chunks]
+        try:
+            await index_manager.delete_nodes(
+                kb_id=document.knowledge_base_id,
+                node_ids=chunk_ids,
+                store_type=kb.vector_store_type,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to delete existing vectors: {e}")
+
+        # Convert chunks to nodes
+        from llama_index.core.schema import TextNode
+
+        nodes = []
+        for chunk in document.chunks:
+            node = TextNode(
+                text=chunk.content,
+                id_=str(chunk.id),
+                metadata={
+                    "document_id": str(document.id),
+                    "knowledge_base_id": str(document.knowledge_base_id),
+                    "title": document.title,
+                    "chunk_id": str(chunk.id),
+                    "chunk_index": chunk.chunk_index,
+                    **embed_info,
+                    **(chunk.chunk_metadata or {}),
+                },
+            )
+            node.node_id = str(chunk.id)
+            nodes.append(node)
+
+        # Re-embed and index
+        await index_manager.add_nodes(
+            kb_id=document.knowledge_base_id,
+            nodes=nodes,
+            embed_model=embed_model,
+            store_type=kb.vector_store_type,
+            embed_dim=embed_dim,
+        )
+
+        logger.info(f"Reindexed document {doc_id} with {len(nodes)} chunks")
+
+        return {
+            "document_id": str(doc_id),
+            "chunks_reindexed": len(nodes),
+            "message": f"Successfully reindexed {len(nodes)} chunks",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Failed to reindex document {doc_id} from chunks: {e}", exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to reindex document",
         )
 
 
@@ -946,41 +2490,35 @@ async def delete_document_admin(
 async def rag_query(
     query_data: RAGQueryRequest, session: AsyncSession = Depends(get_async_session)
 ):
-    """RAG Query"""
+    """RAG Query using LlamaIndex pipeline"""
     logger.info(f"RAG query for KB {query_data.knowledge_base_id}, k={query_data.k}")
-    logger.debug(f"Query: {query_data.query[:100]}...")  # Log first 100 chars
+    logger.debug(f"Query: {query_data.query[:100]}...")
     try:
         service = RAGService(session)
-        docs = await service.relevance_search(
+        results = await service.relevance_search(
             query=query_data.query,
             knowledge_base_id=query_data.knowledge_base_id,
             k=query_data.k,
             fetch_k=query_data.fetch_k,
             score_threshold=query_data.score_threshold,
-            search_type=query_data.search_type,
-            filters=query_data.filters,
-            mmr_lambda=query_data.mmr_lambda
-            if query_data.mmr_lambda is not None
-            else 0.5,
-            multi_query=query_data.multi_query,
-            multi_query_count=query_data.multi_query_count,
+            use_hybrid=query_data.hybrid_enabled
+            if query_data.hybrid_enabled is not None
+            else None,
+            use_rerank=query_data.rerank_top_k is not None
+            if query_data.rerank_top_k
+            else None,
+            query_transform="multi_query" if query_data.multi_query else None,
             rerank_top_k=query_data.rerank_top_k,
             rerank_model_id=query_data.rerank_model_id,
-            hybrid_enabled=query_data.hybrid_enabled,
-            hybrid_corpus_limit=query_data.hybrid_corpus_limit,
         )
         retrieved_docs = [
             RAGRetrievedDocument(
-                content=doc.page_content,
-                metadata=doc.metadata or {},
-                score=doc.metadata.get("score")
-                if isinstance(doc.metadata, dict)
-                else None,
-                similarity=doc.metadata.get("similarity")
-                if isinstance(doc.metadata, dict)
-                else None,
+                content=result.content,
+                metadata=result.metadata or {},
+                score=result.score,
+                similarity=result.score,
             )
-            for doc in docs
+            for result in results
         ]
         logger.info(
             f"RAG query returned {len(retrieved_docs)} documents for KB {query_data.knowledge_base_id}"
@@ -1008,6 +2546,56 @@ async def rag_query(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get relevant documents",
+        )
+
+
+@router.post(
+    "/knowledge-bases/{kb_id}/evaluate",
+    response_model=EvaluationResponse,
+    summary="Evaluate RAG quality",
+    description="Run RAG evaluation on provided samples using RAGAS metrics",
+)
+async def evaluate_rag(
+    kb_id: uuid.UUID,
+    request: EvaluationRequest,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_active_user),
+):
+    """Evaluate RAG quality for a knowledge base"""
+    logger.info(f"RAG evaluation for KB {kb_id} with {len(request.samples)} samples")
+    try:
+        from airbeeps.rag.evaluator import EvaluationSample as EvalSample
+        from airbeeps.rag.evaluator import get_evaluator
+
+        # Convert request samples to evaluator format
+        samples = [
+            EvalSample(
+                question=s.question,
+                answer=s.answer,
+                contexts=s.contexts,
+                ground_truth=s.ground_truth,
+            )
+            for s in request.samples
+        ]
+
+        evaluator = get_evaluator()
+        result = await evaluator.evaluate(samples, metrics=request.metrics)
+
+        return EvaluationResponse(
+            faithfulness=result.faithfulness,
+            answer_relevancy=result.answer_relevancy,
+            context_recall=result.context_recall,
+            context_precision=result.context_precision,
+            overall_score=result.overall_score,
+            num_samples=result.num_samples,
+            errors=result.errors,
+            metadata=result.metadata,
+        )
+    except Exception as e:
+        logger.error(f"RAG evaluation failed for KB {kb_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Evaluation failed: {str(e)}",
         )
 
 
@@ -1073,7 +2661,7 @@ import json
 from fastapi import File, Form, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
-from airbeeps.rag.job_queue import get_job_queue
+from airbeeps.rag.job_queue import JobPriority, get_job_queue
 from airbeeps.rag.models import IngestionJob, IngestionJobEvent
 
 from .schemas import (
@@ -1094,6 +2682,8 @@ async def create_ingestion_job_from_upload(
     dedup_strategy: str = Form(default="replace"),
     clean_data: bool = Form(default=False),
     profile_id: uuid.UUID | None = Form(default=None),
+    preprocessing_config: str | None = Form(default=None),
+    priority: str = Form(default="normal"),  # low, normal, high, urgent
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(current_superuser),
 ):
@@ -1205,6 +2795,20 @@ async def create_ingestion_job_from_upload(
             elif name_lower.endswith(".md"):
                 file_type = "md"
 
+        # Parse and validate preprocessing config if provided
+        parsed_preprocessing = None
+        if preprocessing_config:
+            try:
+                preprocessing_dict = json.loads(preprocessing_config)
+                parsed_preprocessing = DocumentPreprocessingConfig(
+                    **preprocessing_dict
+                ).model_dump(exclude_none=True)
+            except (json.JSONDecodeError, ValueError) as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid preprocessing_config: {e}",
+                )
+
         # Create ingestion job with effective config from defaults
         job = IngestionJob(
             knowledge_base_id=knowledge_base_id,
@@ -1218,6 +2822,7 @@ async def create_ingestion_job_from_upload(
                 "dedup_strategy": effective_dedup_strategy,
                 "clean_data": effective_clean_data,
                 "profile_id": str(profile_id) if profile_id else None,
+                "preprocessing": parsed_preprocessing,
             },
         )
         session.add(job)
@@ -1226,13 +2831,22 @@ async def create_ingestion_job_from_upload(
 
         logger.info(f"Created ingestion job {job.id} for file {file.filename}")
 
-        # Enqueue for background processing
+        # Map priority string to enum
+        priority_map = {
+            "low": JobPriority.LOW,
+            "normal": JobPriority.NORMAL,
+            "high": JobPriority.HIGH,
+            "urgent": JobPriority.URGENT,
+        }
+        job_priority = priority_map.get(priority.lower(), JobPriority.NORMAL)
+
+        # Enqueue for background processing with priority
         queue = get_job_queue()
-        await queue.enqueue(job.id)
+        await queue.enqueue(job.id, priority=job_priority)
 
         return IngestionJobCreateResponse(
             job_id=job.id,
-            message="Ingestion job created and queued",
+            message=f"Ingestion job created and queued (priority: {job_priority.name})",
         )
 
     except HTTPException:
@@ -1529,6 +3143,22 @@ async def retry_ingestion_job(
         job_id=new_job.id,
         message="Retry job created and queued",
     )
+
+
+@router.get(
+    "/ingestion-jobs/queue/stats",
+    summary="Get job queue statistics",
+    description="Get statistics about the ingestion job queue including success rate, avg time, etc.",
+)
+async def get_job_queue_stats(
+    current_user: User = Depends(current_superuser),
+):
+    """Get job queue statistics."""
+    logger.debug(f"Getting job queue stats for user {current_user.id}")
+
+    queue = get_job_queue()
+    stats = await queue.get_stats()
+    return stats.to_dict()
 
 
 # =============================================================================

@@ -1,8 +1,21 @@
 import contextvars
 import logging
 import logging.config
+import os
 import sys
 import uuid
+
+# Disable third-party telemetry (but NOT OpenTelemetry for our own tracing)
+os.environ["LLAMA_INDEX_INSTRUMENTATION"] = "false"
+os.environ["LLAMA_INDEX_NO_TELEMETRY"] = "1"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["DO_NOT_TRACK"] = "1"
+# Disable LlamaIndex global handler (prevents any telemetry setup)
+os.environ["LLAMA_INDEX_DISABLE_GLOBAL_HANDLER"] = "1"
+# Note: OTEL_SDK_DISABLED is NOT set - we use OpenTelemetry for our own agent tracing
+
+from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -20,6 +33,13 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from .agents.api.v1.admin_router import router as agents_admin_router_v1
+from .agents.api.v1.admin_router import tools_router as tools_admin_router_v1
+from .agents.memory import memory_admin_router, memory_router
+from .agents.resilience.api import router as health_router
+from .agents.specialist.api import router as multiagent_router
+from .agents.specialist.api import admin_router as multiagent_admin_router
+from .agents.tracing.api import router as tracing_router
+from .audit.api import router as audit_router
 from .ai_models.api.v1.admin_router import router as models_admin_router_v1
 from .ai_models.api.v1.user_router import router as models_user_router_v1
 from .assistants.api.v1.admin_router import router as assistants_admin_router_v1
@@ -41,6 +61,8 @@ from .system_config.api.v1.admin_router import router as configs_admin_router_v1
 from .system_config.api.v1.user_router import router as configs_user_router_v1
 from .users.api.v1.admin_router import router as users_admin_router_v1
 from .users.api.v1.user_router import router as users_user_router_v1
+from .ai_models.analytics import router as analytics_router
+from .ai_models.analytics import admin_router as analytics_admin_router
 
 # Request-scoped ID
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
@@ -80,6 +102,22 @@ LOGGING_CONFIG = {
 
 logging.config.dictConfig(LOGGING_CONFIG)
 
+logger = logging.getLogger(__name__)
+
+# Log telemetry status at startup
+logger.info("=" * 60)
+logger.info("TELEMETRY STATUS: Third-party telemetry DISABLED")
+logger.info("=" * 60)
+logger.info("✓ ChromaDB telemetry: DISABLED (anonymized_telemetry=False)")
+logger.info("✓ LlamaIndex telemetry: DISABLED")
+logger.info("✓ HuggingFace telemetry: DISABLED")
+logger.info("✓ DO_NOT_TRACK: ENABLED")
+if settings.TRACING_ENABLED:
+    logger.info(f"✓ Agent Tracing: ENABLED (backend: {settings.TRACING_BACKEND})")
+else:
+    logger.info("✓ Agent Tracing: DISABLED")
+logger.info("=" * 60)
+
 # ============================================================================
 # Security: Validate SECRET_KEY in production
 # ============================================================================
@@ -116,12 +154,124 @@ async def require_admin(current_superuser=Depends(current_superuser)):
     return current_superuser
 
 
-app_config = {"title": settings.PROJECT_NAME}
+# ============================================================================
+# OpenAPI / Interactive API Documentation Configuration
+# ============================================================================
+app_config: dict[str, Any] = {
+    "title": settings.PROJECT_NAME,
+    "description": """
+**Airbeeps** - Local-first, self-hosted AI assistant for chat and RAG.
 
+## Features
+- 🤖 **Multi-LLM Chat** - Support for OpenAI, Anthropic, Google, local models via LiteLLM
+- 📚 **RAG System** - Advanced retrieval with hybrid search, reranking, and multi-hop
+- 🔧 **Agent Tools** - Code execution, web search, file operations, data analysis
+- 🧠 **Agent Memory** - Persistent memory with encryption and GDPR compliance
+- 🔌 **MCP Integration** - Model Context Protocol for external tool integration
+- 📊 **Observability** - OpenTelemetry tracing and metrics
+
+## Authentication
+Most endpoints require authentication via JWT tokens. Use the `/api/v1/auth/login` endpoint to obtain tokens.
+
+## API Versioning
+All endpoints are versioned under `/api/v1/`. Future versions will be added as `/api/v2/` etc.
+""",
+    "version": "1.0.0",
+    "license_info": {
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    "contact": {
+        "name": "Airbeeps Support",
+        "url": "https://github.com/airbeeps/airbeeps",
+        "email": "hello@airbeeps.com",
+    },
+    "openapi_tags": [
+        {"name": "Health", "description": "Health check endpoints for monitoring"},
+        {"name": "Auth", "description": "Authentication and token management"},
+        {"name": "OAuth", "description": "OAuth provider integrations"},
+        {"name": "Users", "description": "User profile management"},
+        {"name": "Assistants", "description": "AI assistant configurations"},
+        {"name": "Chat", "description": "Conversation and messaging"},
+        {"name": "RAG", "description": "Retrieval-Augmented Generation"},
+        {"name": "Agent Memory", "description": "Agent memory management"},
+        {"name": "Multi-Agent", "description": "Multi-agent orchestration"},
+        {"name": "Files", "description": "File upload and management"},
+        {"name": "AI Models", "description": "AI model discovery and configuration"},
+        {
+            "name": "Model Analytics",
+            "description": "Model usage analytics and A/B testing",
+        },
+    ],
+}
+
+# Only show docs in allowed environments (or when explicitly enabled)
 if settings.ENVIRONMENT not in settings.SHOW_DOCS_ENVIRONMENT:
-    app_config["openapi_url"] = None
+    if not settings.DOCS_ENABLED:
+        app_config["openapi_url"] = None
+    else:
+        # Docs explicitly enabled in non-dev environment
+        app_config["docs_url"] = "/docs"
+        app_config["redoc_url"] = "/redoc"
+        app_config["openapi_url"] = "/openapi.json"
+else:
+    # Development environment - always show docs
+    app_config["docs_url"] = "/docs"
+    app_config["redoc_url"] = "/redoc"
+    app_config["openapi_url"] = "/openapi.json"
 
 app = FastAPI(**app_config)
+
+# ============================================================================
+# OpenTelemetry Tracing Setup (for agent observability)
+# ============================================================================
+if settings.TRACING_ENABLED:
+    from .agents.tracing.config import (
+        TracingConfig,
+        TracingBackend,
+        setup_global_tracing,
+    )
+    from .agents.tracing.pii_redactor import PIIRedactor, set_redactor
+    from .agents.tracing.metrics import setup_metrics
+
+    # Setup PII redactor
+    redactor = PIIRedactor(enabled=settings.TRACING_REDACT_PII)
+    set_redactor(redactor)
+
+    # Setup tracing
+    try:
+        tracing_config = TracingConfig(
+            backend=TracingBackend(settings.TRACING_BACKEND),
+            endpoint=settings.TRACING_ENDPOINT or None,
+            service_name="airbeeps-agents",
+            enable_pii_redaction=settings.TRACING_REDACT_PII,
+            sample_rate=settings.TRACING_SAMPLE_RATE,
+            admin_only=settings.TRACING_ADMIN_ONLY,
+        )
+        setup_global_tracing(tracing_config)
+        logger.info(
+            f"OpenTelemetry tracing initialized: backend={settings.TRACING_BACKEND}"
+        )
+    except Exception as e:
+        logger.warning(f"Failed to initialize tracing: {e}")
+
+    # Setup metrics
+    try:
+        setup_metrics(service_name="airbeeps-agents", enable_console=False)
+        logger.info("OpenTelemetry metrics initialized")
+    except Exception as e:
+        logger.warning(f"Failed to initialize metrics: {e}")
+
+    # Optionally instrument FastAPI (requires tracing to be enabled)
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(app)
+        logger.info("FastAPI instrumented with OpenTelemetry")
+    except ImportError:
+        logger.debug("FastAPI instrumentation not available")
+    except Exception as e:
+        logger.warning(f"Failed to instrument FastAPI: {e}")
 
 # ============================================================================
 # Security Middleware
@@ -172,12 +322,25 @@ async def add_request_id(request: Request, call_next) -> Response:
 async def log_exceptions(request: Request, call_next):
     try:
         return await call_next(request)
-    except Exception:
-        logging.getLogger("app").exception("Unhandled exception")
+    except Exception as e:
+        # Log just the essential error info without the full stack trace for common errors
+        logger = logging.getLogger("app")
+
+        # For database errors, log a concise message
+        if "sqlalchemy" in str(type(e).__module__).lower():
+            logger.error(
+                f"Database error in {request.method} {request.url.path}: {type(e).__name__}: {str(e)}"
+            )
+        else:
+            # For other exceptions, log full trace
+            logger.exception("Unhandled exception")
         raise
 
 
 app.include_router(configs_user_router_v1, prefix="/api/v1", tags=["Public Configs"])
+
+# Health endpoints (no auth required for liveness/readiness probes)
+app.include_router(health_router, prefix="/api/v1", tags=["Health"])
 
 app.include_router(auth_user_router, prefix="/api/v1", tags=["Auth"])
 app.include_router(auth_refresh_router, prefix="/api/v1", tags=["Auth"])
@@ -199,6 +362,9 @@ user_route_v1.include_router(files_user_router_v1, tags=["Files"])
 
 user_route_v1.include_router(chat_user_router_v1, tags=["Chat"])
 user_route_v1.include_router(rag_user_router_v1, tags=["RAG"])
+user_route_v1.include_router(memory_router, tags=["Agent Memory"])
+user_route_v1.include_router(multiagent_router, tags=["Multi-Agent"])
+user_route_v1.include_router(analytics_router, tags=["Model Analytics"])
 
 app.include_router(user_route_v1)
 
@@ -222,6 +388,13 @@ admin_router_v1.include_router(
     agents_admin_router_v1, tags=["Admin - Agent Tools & MCP"]
 )
 
+admin_router_v1.include_router(
+    tools_admin_router_v1, tags=["Admin - Agent Tools & MCP"]
+)
+admin_router_v1.include_router(memory_admin_router, tags=["Admin - Agent Memory"])
+admin_router_v1.include_router(tracing_router, tags=["Admin - Agent Tracing"])
+admin_router_v1.include_router(multiagent_admin_router, tags=["Admin - Multi-Agent"])
+
 # OAuth Admin routes
 admin_router_v1.include_router(oauth_admin_router_v1, tags=["Admin - OAuth"])
 
@@ -229,10 +402,61 @@ admin_router_v1.include_router(oauth_admin_router_v1, tags=["Admin - OAuth"])
 admin_router_v1.include_router(users_admin_router_v1, tags=["Admin - Users"])
 admin_router_v1.include_router(configs_admin_router_v1, tags=["Admin - System Config"])
 
+# Audit logs
+admin_router_v1.include_router(audit_router, tags=["Admin - Audit Logs"])
+
+# Model Analytics & A/B Testing
+admin_router_v1.include_router(analytics_admin_router, tags=["Admin - Model Analytics"])
+
 app.include_router(admin_router_v1)
 
 # Add pagination support
 add_pagination(app)
+
+
+# ============================================================================
+# Startup and Shutdown Events
+# ============================================================================
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on application startup."""
+    logger = logging.getLogger(__name__)
+
+    # Initialize storage (create bucket if needed)
+    try:
+        from .files.storage import init_storage
+
+        await init_storage()
+    except Exception as e:
+        logger.warning(f"Storage initialization warning: {e}")
+
+    # Initialize cache (warm up connection)
+    try:
+        from .cache import get_cache
+
+        cache = await get_cache()
+        healthy = await cache.health_check()
+        if healthy:
+            logger.info("Cache backend initialized successfully")
+        else:
+            logger.warning("Cache health check failed")
+    except Exception as e:
+        logger.warning(f"Cache initialization warning: {e}")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up resources on application shutdown."""
+    logger = logging.getLogger(__name__)
+
+    # Close cache connection
+    try:
+        from .cache import close_cache
+
+        await close_cache()
+        logger.info("Cache connection closed")
+    except Exception as e:
+        logger.warning(f"Cache shutdown warning: {e}")
 
 
 # ============================================================================

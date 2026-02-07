@@ -343,6 +343,59 @@ async def ensure_system_configs(configs: list[dict[str, Any]]) -> None:
             await session.refresh(config)
 
 
+async def ensure_mcp_servers(servers: list[dict[str, Any]]) -> None:
+    """Create or update MCP server configurations."""
+    from .agents.models import MCPServerTypeEnum
+
+    async with async_session_maker() as session:
+        for entry in servers:
+            name = entry.get("name")
+            if not name:
+                logger.warning(f"Skipping MCP server without name: {entry}")
+                continue
+
+            result = await session.execute(
+                select(MCPServerConfig).where(MCPServerConfig.name == name)
+            )
+            server = result.scalar_one_or_none()
+
+            # Parse server type
+            server_type_value = str(entry.get("server_type", "STDIO")).upper()
+            try:
+                server_type = MCPServerTypeEnum[server_type_value]
+            except KeyError:
+                server_type = MCPServerTypeEnum.STDIO
+
+            # Build connection config
+            connection_config = entry.get("connection_config", {})
+
+            if server:
+                # Update existing server (preserve is_active if already set by user)
+                server.description = entry.get("description", server.description)
+                server.server_type = server_type
+                server.connection_config = connection_config
+                # Don't override extra_data completely, merge it
+                existing_extra = server.extra_data or {}
+                new_extra = entry.get("extra_data", {})
+                server.extra_data = {**existing_extra, **new_extra}
+                # Don't override is_active - user controls this
+                logger.info(f"Updated MCP server: {name}")
+            else:
+                server = MCPServerConfig(
+                    name=name,
+                    description=entry.get("description"),
+                    server_type=server_type,
+                    connection_config=connection_config,
+                    is_active=bool(entry.get("is_active", False)),
+                    extra_data=entry.get("extra_data", {}),
+                )
+                session.add(server)
+                logger.info(f"Created MCP server: {name}")
+
+            await session.commit()
+            await session.refresh(server)
+
+
 async def ensure_ingestion_profiles(
     profiles: list[dict[str, Any]],
     users: dict[str, User],
@@ -427,6 +480,7 @@ async def seed_from_file(path: Path) -> None:
     assistants_data = data.get("assistants", [])
     system_configs_data = data.get("system_configs", [])
     ingestion_profiles_data = data.get("ingestion_profiles", [])
+    mcp_servers_data = data.get("mcp_servers", [])
 
     users: dict[str, User] = {}
     if users_data:
@@ -464,6 +518,10 @@ async def seed_from_file(path: Path) -> None:
     if ingestion_profiles_data:
         logger.info("Seeding builtin ingestion profiles...")
         await ensure_ingestion_profiles(ingestion_profiles_data, users)
+
+    if mcp_servers_data:
+        logger.info("Seeding MCP servers...")
+        await ensure_mcp_servers(mcp_servers_data)
 
     logger.info("Seeding completed successfully")
 

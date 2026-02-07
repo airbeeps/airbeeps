@@ -1,13 +1,22 @@
 """
 S3-compatible storage service for file upload and management.
+
+Features:
+- AWS S3 and S3-compatible storage (MinIO, LocalStack)
+- Local filesystem fallback
+- Automatic retry with exponential backoff
+- Health checks for monitoring
+- Automatic bucket creation on startup
 """
 
+import asyncio
 import logging
 import mimetypes
 from datetime import UTC, datetime
+from functools import wraps
 from io import BytesIO
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO, Callable, TypeVar
 from uuid import UUID
 
 import aioboto3
@@ -17,6 +26,65 @@ from botocore.exceptions import ClientError, NoCredentialsError
 from airbeeps.config import settings
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def with_retry(
+    max_attempts: int | None = None,
+    backoff_factor: float | None = None,
+    retryable_errors: tuple[str, ...] = (
+        "ServiceUnavailable",
+        "InternalError",
+        "RequestTimeout",
+        "ThrottlingException",
+        "SlowDown",
+    ),
+):
+    """
+    Decorator for S3 operations with exponential backoff retry.
+
+    Args:
+        max_attempts: Maximum retry attempts (uses settings.S3_RETRY_MAX_ATTEMPTS if None)
+        backoff_factor: Backoff multiplier (uses settings.S3_RETRY_BACKOFF_FACTOR if None)
+        retryable_errors: S3 error codes that should trigger retry
+    """
+
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> T:
+            attempts = max_attempts or settings.S3_RETRY_MAX_ATTEMPTS
+            backoff = backoff_factor or settings.S3_RETRY_BACKOFF_FACTOR
+
+            last_exception = None
+            for attempt in range(attempts):
+                try:
+                    return await func(*args, **kwargs)
+                except ClientError as e:
+                    error_code = e.response.get("Error", {}).get("Code", "")
+                    if error_code not in retryable_errors:
+                        raise
+
+                    last_exception = e
+                    if attempt < attempts - 1:
+                        wait_time = backoff * (2**attempt)
+                        logger.warning(
+                            f"S3 operation failed with {error_code}, "
+                            f"retrying in {wait_time:.1f}s (attempt {attempt + 1}/{attempts})"
+                        )
+                        await asyncio.sleep(wait_time)
+                except Exception as e:
+                    # For non-ClientError exceptions, don't retry
+                    raise
+
+            # All retries exhausted
+            if last_exception:
+                raise last_exception
+            raise RuntimeError("Retry logic error")  # Should never reach here
+
+        return wrapper
+
+    return decorator
 
 
 class S3StorageService:
@@ -469,6 +537,111 @@ class S3StorageService:
             logger.error(f"Failed to create bucket {self.bucket_name}: {e}")
             return False
 
+    async def health_check(self) -> dict[str, Any]:
+        """
+        Check storage backend health.
+
+        Returns:
+            Dictionary with health status and details
+        """
+        result = {
+            "backend": self.backend,
+            "healthy": False,
+            "details": {},
+        }
+
+        if self.backend == "local":
+            try:
+                # Check if storage root exists and is writable
+                if self.local_root.exists() and self.local_root.is_dir():
+                    # Try to write a test file
+                    test_file = self.local_root / ".health_check"
+                    test_file.write_text("ok")
+                    test_file.unlink()
+                    result["healthy"] = True
+                    result["details"] = {
+                        "storage_root": str(self.local_root),
+                        "writable": True,
+                    }
+                else:
+                    result["details"] = {
+                        "error": "Storage root does not exist or is not a directory"
+                    }
+            except Exception as e:
+                result["details"] = {"error": str(e)}
+            return result
+
+        # S3 health check
+        try:
+            async with await self._get_client() as s3_client:
+                # Try to list bucket (lightweight operation)
+                await s3_client.head_bucket(Bucket=self.bucket_name)
+                result["healthy"] = True
+                result["details"] = {
+                    "bucket": self.bucket_name,
+                    "endpoint": self.endpoint_url,
+                    "region": self.region,
+                }
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            result["details"] = {
+                "error": f"S3 error: {error_code}",
+                "bucket": self.bucket_name,
+                "endpoint": self.endpoint_url,
+            }
+        except Exception as e:
+            result["details"] = {"error": str(e)}
+
+        return result
+
+    @with_retry()
+    async def upload_file_with_retry(
+        self,
+        file_data: BinaryIO,
+        file_type: str,
+        file_id: UUID,
+        filename: str,
+        content_type: str,
+        file_size: int,
+    ) -> str:
+        """Upload file with automatic retry on transient failures."""
+        return await self.upload_file(
+            file_data, file_type, file_id, filename, content_type, file_size
+        )
+
+    @with_retry()
+    async def download_file_with_retry(self, file_key: str) -> tuple[BytesIO, str]:
+        """Download file with automatic retry on transient failures."""
+        return await self.download_file(file_key)
+
 
 # Global storage service instance
 storage_service = S3StorageService()
+
+
+async def init_storage() -> bool:
+    """
+    Initialize storage backend on application startup.
+
+    - Creates bucket if configured (S3_AUTO_CREATE_BUCKET=true)
+    - Verifies storage is accessible
+
+    Returns:
+        True if initialization successful, False otherwise
+    """
+    if settings.FILE_STORAGE_BACKEND.lower() == "s3":
+        if settings.S3_AUTO_CREATE_BUCKET:
+            logger.info("Initializing S3 storage...")
+            success = await storage_service.create_bucket_if_not_exists()
+            if not success:
+                logger.warning(
+                    "Failed to create/verify S3 bucket. Storage operations may fail."
+                )
+                return False
+            logger.info("S3 storage initialized successfully")
+    else:
+        # Local storage - ensure directory exists
+        await storage_service.create_bucket_if_not_exists()
+        logger.info(f"Local storage initialized at {storage_service.local_root}")
+
+    return True

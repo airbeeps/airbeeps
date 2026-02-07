@@ -299,12 +299,16 @@ class LangchainChatService:
         content: str,
         images: list[dict[str, Any]] | None = None,
         language: str | None = None,
+        model_id_override: uuid.UUID | None = None,
+        web_search_enabled: bool | None = None,
     ) -> AsyncIterator[dict]:
         """Send a message and get streaming AI response (supports Agent mode)"""
         logger.info(
             f"Starting message stream for conversation {conversation_id}, user {user_id}, has_images={bool(images)}"
         )
-        logger.debug(f"Message content length: {len(content)}, language: {language}")
+        logger.debug(
+            f"Message content length: {len(content)}, language: {language}, model_override: {model_id_override}"
+        )
 
         conversation = await self.conversation_service.get_conversation_with_model(
             conversation_id=conversation_id,
@@ -316,6 +320,29 @@ class LangchainChatService:
                 f"Conversation {conversation_id} not found or access denied for user {user_id}"
             )
             raise ValueError("Conversation not found or access denied")
+
+        # Handle model override if provided
+        effective_model_name = conversation.assistant.model.name
+        if model_id_override:
+            override_model = await self.session.execute(
+                select(Model)
+                .options(selectinload(Model.provider))
+                .where(Model.id == model_id_override)
+            )
+            override_model = override_model.scalar_one_or_none()
+            if override_model and override_model.provider:
+                # Temporarily swap the model for this request
+                conversation.assistant.model = override_model
+                effective_model_name = override_model.name
+                logger.info(f"Using override model: {effective_model_name}")
+
+        # Handle web search toggle if provided (affects agent tool availability)
+        # Store the override in conversation extra_data for agent executor to pick up
+        if web_search_enabled is not None:
+            if not conversation.extra_data:
+                conversation.extra_data = {}
+            conversation.extra_data["web_search_enabled_override"] = web_search_enabled
+            logger.debug(f"Web search override set to: {web_search_enabled}")
 
         # Prepare image attachments for prompting + persistence
         prompt_images: list[dict[str, Any]] | None = None
@@ -346,7 +373,7 @@ class LangchainChatService:
             content="",  # Will be updated after streaming
             message_type=MessageTypeEnum.ASSISTANT,
             conversation_id=conversation_id,
-            extra_data={"model": conversation.assistant.model.name},
+            extra_data={"model": effective_model_name},
             created_at=now + timedelta(milliseconds=10),
         )
 
@@ -394,7 +421,7 @@ class LangchainChatService:
                         "id": str(assistant_message.id),
                         "conversation_id": str(conversation_id),
                         "message_type": "ASSISTANT",
-                        "model": conversation.assistant.model.name,
+                        "model": effective_model_name,
                         "created_at": assistant_message.created_at.isoformat(),
                     },
                 }
@@ -596,7 +623,7 @@ class LangchainChatService:
                     "content": complete_content,
                     "conversation_id": str(conversation_id),
                     "message_type": "ASSISTANT",
-                    "model": conversation.assistant.model.name,
+                    "model": effective_model_name,
                     "created_at": assistant_message.created_at.isoformat(),
                     "updated_at": assistant_message.updated_at.isoformat(),
                     "user_message_id": str(user_message.id),
@@ -882,11 +909,12 @@ class LangchainChatService:
         # Get translated system prompt
         system_prompt = self.prompt_builder.get_system_prompt(assistant, language)
 
-        # Initialize Agent execution engine
+        # Initialize Agent execution engine with user for permission checking
         agent_engine = AgentExecutionEngine(
             assistant=assistant,
             session=self.session,
             system_prompt_override=system_prompt,
+            user=conversation.user,  # Pass user for proper permission checks
         )
 
         # Yield agent start event

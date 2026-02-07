@@ -1,20 +1,33 @@
 """
 Ingestion Runner: executes ingestion jobs and emits progress events.
 
-This module runs the actual ingestion pipeline (parsing, chunking, embedding,
-upserting) and updates job status/events in the database for SSE streaming.
+This module runs the actual ingestion pipeline using LlamaIndex:
+- Parsing (extract content from files)
+- Chunking (semantic/hierarchical with LlamaIndex node parsers)
+- Embedding (LlamaIndex embedding models)
+- Upserting (to configured vector store via index manager)
+
+Updates job status/events in the database for SSE streaming.
 """
 
 import logging
 import uuid
 from collections.abc import Callable
+from io import BytesIO
 from typing import Any
 
+import pandas as pd
+from llama_index.core.schema import TextNode
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from airbeeps.config import settings
 from airbeeps.files.service import FileService
 
+from .cleaners import apply_cleaners
+from .doc_processor import DocumentProcessor, get_document_processor
+from .embeddings import EmbeddingService, get_embedding_service
+from .index_manager import IndexManager, get_index_manager
 from .models import (
     Document,
     DocumentChunk,
@@ -23,6 +36,7 @@ from .models import (
     IngestionProfile,
     KnowledgeBase,
 )
+from .stores.base import collection_name_for_kb
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +52,11 @@ STAGE_WEIGHTS = {
 
 class IngestionRunner:
     """
-    Runs an ingestion job through all stages, emitting events.
+    Runs an ingestion job through all stages using LlamaIndex.
 
     The runner:
     1. Loads the job from DB
-    2. Executes stages: parse → chunk → embed → upsert
+    2. Executes stages: parse -> chunk -> embed -> upsert
     3. Updates job status and emits events at each step
     4. Handles errors and cancellation gracefully
     """
@@ -59,11 +73,14 @@ class IngestionRunner:
         """
         self.job_id = job_id
         self._cancel_check = cancel_check or (lambda: False)
-        self._event_seq = 0  # Will be initialized from DB in run()
+        self._event_seq = 0
+
+        # LlamaIndex components
+        self.embedding_service = get_embedding_service()
+        self.index_manager = get_index_manager()
 
     async def _init_event_seq(self, session: AsyncSession) -> None:
         """Initialize event sequence from max existing seq in DB."""
-
         result = await session.execute(
             select(func.max(IngestionJobEvent.seq)).where(
                 IngestionJobEvent.job_id == self.job_id
@@ -81,12 +98,10 @@ class IngestionRunner:
 
         async with get_async_session_context() as session:
             try:
-                # Initialize event seq from DB to ensure durability across restarts
                 await self._init_event_seq(session)
                 await self._execute(session)
             except Exception as e:
                 logger.error(f"Ingestion job {self.job_id} failed: {e}", exc_info=True)
-                # Try to mark as failed
                 try:
                     await self._mark_failed(session, str(e))
                 except Exception:
@@ -121,7 +136,6 @@ class IngestionRunner:
             },
         )
 
-        # Check for cancellation at each stage
         if await self._check_cancel(session, job):
             return
 
@@ -141,8 +155,9 @@ class IngestionRunner:
         clean_data = config.get("clean_data", False)
         profile_id = config.get("profile_id")
         dedup_strategy = config.get("dedup_strategy", "replace")
+        preprocessing = config.get("preprocessing", {}) or {}
 
-        # Load ingestion limits from system config
+        # Load ingestion limits
         from airbeeps.system_config.service import ConfigService
 
         config_service = ConfigService()
@@ -154,12 +169,11 @@ class IngestionRunner:
         max_sheet_rows = limits.get("max_sheet_rows", 50000)
         max_chunks = limits.get("max_chunks_per_document", 10000)
 
-        # Handle deduplication based on file_hash
+        # Handle deduplication
         existing_doc = None
         replaced_doc_id = None
 
         if job.file_hash:
-            # Find existing document with same hash in this KB
             result = await session.execute(
                 select(Document).where(
                     and_(
@@ -173,7 +187,6 @@ class IngestionRunner:
 
         if existing_doc:
             if dedup_strategy == "skip":
-                # Skip ingestion - document already exists
                 job.status = "SUCCEEDED"
                 job.stage = None
                 job.progress = 100
@@ -194,15 +207,12 @@ class IngestionRunner:
                 return
 
             if dedup_strategy == "replace":
-                # Delete existing document and its chunks
                 replaced_doc_id = existing_doc.id
                 existing_doc.status = "DELETED"
                 await session.commit()
 
-                # Best-effort: delete existing vectors for the replaced document
+                # Delete existing vectors
                 try:
-                    from .engine import get_engine_for_kb
-
                     result = await session.execute(
                         select(DocumentChunk.id).where(
                             DocumentChunk.document_id == replaced_doc_id
@@ -210,37 +220,28 @@ class IngestionRunner:
                     )
                     chunk_ids = [str(cid) for (cid,) in result.all()]
                     if chunk_ids:
-                        engine = get_engine_for_kb(kb.embedding_config)
-                        collection_name = f"kb_{job.knowledge_base_id}"
-                        await engine.delete_documents(
-                            collection_name=collection_name,
-                            document_ids=chunk_ids,
+                        await self.index_manager.delete_nodes(
+                            kb_id=job.knowledge_base_id,
+                            node_ids=chunk_ids,
+                            store_type=kb.vector_store_type,
                         )
                         await self._emit_event(
                             session,
                             "log",
                             {
-                                "message": f"Deleted {len(chunk_ids)} vectors for replaced document {replaced_doc_id}",
+                                "message": f"Deleted {len(chunk_ids)} vectors for replaced document"
                             },
                         )
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to cleanup vectors for replaced document {replaced_doc_id}: {e}",
-                        exc_info=True,
-                    )
+                    logger.warning(f"Failed to cleanup vectors: {e}")
 
                 await self._emit_event(
                     session,
                     "log",
-                    {
-                        "message": f"Replacing existing document {replaced_doc_id}",
-                    },
+                    {"message": f"Replacing existing document {replaced_doc_id}"},
                 )
-                logger.info(f"Job {self.job_id} replacing document {replaced_doc_id}")
 
-            # "version" strategy - just create new document (no deletion)
-
-        # Stage 1: PARSING - extract content
+        # Stage 1: PARSING
         await self._update_stage(session, job, "PARSING", 0)
 
         file_service = FileService(session)
@@ -253,7 +254,6 @@ class IngestionRunner:
         )
 
         if file_type in {"xls", "xlsx", "csv"}:
-            # Tabular ingestion
             parsed_data = await self._parse_tabular(
                 session,
                 job,
@@ -261,73 +261,75 @@ class IngestionRunner:
                 file_type,
                 profile_id,
                 clean_data,
-                max_rows=max_sheet_rows,
+                max_sheet_rows,
+                preprocessing=preprocessing,
             )
         elif file_type == "pdf":
-            # PDF with page-level tracking
             parsed_data = await self._parse_pdf(
-                session, job, content_extractor, max_pdf_pages=max_pdf_pages
+                session,
+                job,
+                content_extractor,
+                max_pdf_pages,
+                preprocessing=preprocessing,
             )
         else:
-            # Generic file ingestion (TXT, MD, DOCX, etc.)
             parsed_data = await self._parse_generic(
-                session, job, content_extractor, max_pdf_pages=max_pdf_pages
+                session, job, content_extractor, max_pdf_pages
             )
 
         if await self._check_cancel(session, job):
             return
 
-        # Stage 2: CHUNKING
+        # Stage 2: CHUNKING with LlamaIndex
         await self._update_stage(session, job, "CHUNKING", STAGE_WEIGHTS["PARSING"])
 
-        from .chunker import DocumentChunker
+        # Get embedding model for semantic chunking
+        (
+            embed_model,
+            embed_info,
+        ) = await self.embedding_service.get_embed_model_with_info(
+            str(kb.embedding_model_id)
+        )
+        embed_dim = embed_info.get("embed_dim", 384)
 
-        chunker = DocumentChunker()
+        doc_processor = get_document_processor(embed_model=embed_model)
 
         if file_type in {"xls", "xlsx", "csv"}:
-            chunks_data = await self._chunk_tabular(
-                session, job, kb, parsed_data, clean_data
+            nodes = await self._chunk_tabular(
+                session, job, kb, parsed_data, clean_data, embed_info
             )
         elif file_type == "pdf" and parsed_data.get("pages"):
-            # PDF with page tracking
-            chunks_data = await self._chunk_pdf(session, job, kb, chunker, parsed_data)
+            nodes = await self._chunk_pdf(
+                session, job, kb, doc_processor, parsed_data, embed_info, preprocessing
+            )
         else:
-            chunks_data = await self._chunk_generic(
-                session, job, kb, chunker, parsed_data
+            nodes = await self._chunk_generic(
+                session, job, kb, doc_processor, parsed_data, embed_info, preprocessing
             )
 
         # Enforce max chunks limit
-        original_chunk_count = len(chunks_data)
-        if original_chunk_count > max_chunks:
-            chunks_data = chunks_data[:max_chunks]
+        if len(nodes) > max_chunks:
             await self._emit_event(
                 session,
                 "warning",
-                {
-                    "message": f"Truncated from {original_chunk_count} to {max_chunks} chunks (limit)",
-                },
+                {"message": f"Truncated from {len(nodes)} to {max_chunks} chunks"},
             )
-            logger.warning(
-                f"Job {self.job_id}: Truncated {original_chunk_count} chunks to {max_chunks}"
-            )
+            nodes = nodes[:max_chunks]
 
-        job.total_items = len(chunks_data)
+        job.total_items = len(nodes)
         job.processed_items = 0
         await session.commit()
 
         await self._emit_event(
             session,
             "progress",
-            {
-                "stage": "CHUNKING",
-                "total_chunks": len(chunks_data),
-            },
+            {"stage": "CHUNKING", "total_chunks": len(nodes)},
         )
 
         if await self._check_cancel(session, job):
             return
 
-        # Stage 3: EMBEDDING
+        # Stage 3: Create document and chunk records
         await self._update_stage(
             session,
             job,
@@ -335,21 +337,6 @@ class IngestionRunner:
             STAGE_WEIGHTS["PARSING"] + STAGE_WEIGHTS["CHUNKING"],
         )
 
-        from .embeddings import EmbeddingService
-
-        embedding_service = EmbeddingService()
-        embedder = await embedding_service.get_embedder(str(kb.embedding_model_id))
-
-        model_info = await embedding_service._get_model_by_id(
-            str(kb.embedding_model_id)
-        )
-        embedding_meta = {
-            "embedding_model_id": str(kb.embedding_model_id),
-            "embedding_model_name": getattr(model_info, "name", None),
-            "embedding_model_display_name": getattr(model_info, "display_name", None),
-        }
-
-        # Create document record
         document = Document(
             title=parsed_data.get("title", job.original_filename),
             content=parsed_data.get("content", f"Ingested: {job.original_filename}"),
@@ -368,64 +355,122 @@ class IngestionRunner:
         job.document_id = document.id
         await session.commit()
 
-        # Create chunk records with periodic cancel checks and progress updates
+        # Create chunk records with original node IDs preserved
         chunk_records = []
-        CANCEL_CHECK_INTERVAL = 50  # Check cancel every N chunks
-        PROGRESS_UPDATE_INTERVAL = 20  # Update progress every N chunks
+        node_id_map = {}  # Maps original node_id -> chunk_id
 
-        total_chunks = len(chunks_data)
-        embedding_base = STAGE_WEIGHTS["PARSING"] + STAGE_WEIGHTS["CHUNKING"]
-        embedding_weight = STAGE_WEIGHTS["EMBEDDING"]
+        for i, node in enumerate(nodes):
+            node.metadata["document_id"] = str(document.id)
+            original_node_id = node.node_id
 
-        for i, chunk_data in enumerate(chunks_data):
-            # Periodic cancel check during chunk creation
-            if i > 0 and i % CANCEL_CHECK_INTERVAL == 0:
+            # Store relationships before modifications
+            parent_id = None
+            child_ids = []
+            if hasattr(node, "relationships"):
+                from llama_index.core.schema import NodeRelationship
+
+                if NodeRelationship.PARENT in node.relationships:
+                    parent_rel = node.relationships[NodeRelationship.PARENT]
+                    parent_id = (
+                        parent_rel.node_id
+                        if hasattr(parent_rel, "node_id")
+                        else str(parent_rel)
+                    )
+                if NodeRelationship.CHILD in node.relationships:
+                    child_rel = node.relationships[NodeRelationship.CHILD]
+                    if isinstance(child_rel, list):
+                        child_ids = [
+                            c.node_id if hasattr(c, "node_id") else str(c)
+                            for c in child_rel
+                        ]
+                    else:
+                        child_ids = [
+                            child_rel.node_id
+                            if hasattr(child_rel, "node_id")
+                            else str(child_rel)
+                        ]
+
+            chunk_record = DocumentChunk(
+                content=node.get_content(),
+                chunk_index=i,
+                token_count=len(node.get_content().split()),
+                document_id=document.id,
+                chunk_metadata={
+                    "original_node_id": original_node_id,
+                    "parent_node_id": parent_id,
+                    "child_node_ids": child_ids,
+                    **node.metadata,
+                },
+            )
+            chunk_records.append(chunk_record)
+            session.add(chunk_record)
+
+            if i > 0 and i % 50 == 0:
                 if await self._check_cancel(session, job):
                     document.status = "FAILED"
                     await session.commit()
                     return
 
-            # Periodic progress update
-            if i > 0 and i % PROGRESS_UPDATE_INTERVAL == 0:
-                progress_pct = embedding_base + int(
-                    (i / total_chunks) * embedding_weight * 0.5
-                )
-                job.progress = progress_pct
                 job.processed_items = i
                 await session.commit()
 
-                await self._emit_event(
-                    session,
-                    "progress",
-                    {
-                        "stage": "EMBEDDING",
-                        "progress": progress_pct,
-                        "processed_items": i,
-                        "total_items": total_chunks,
-                    },
-                )
-
-            chunk_meta = {
-                **chunk_data.get("metadata", {}),
-                "document_id": str(document.id),
-                "title": document.title,
-                "status": "ACTIVE",
-                **embedding_meta,
-            }
-            chunk_record = DocumentChunk(
-                content=chunk_data["content"],
-                chunk_index=i,
-                token_count=chunk_data.get("token_count"),
-                document_id=document.id,
-                chunk_metadata=chunk_meta,
-            )
-            chunk_records.append(chunk_record)
-            session.add(chunk_record)
-
         await session.flush()
 
+        # Map original node IDs to chunk IDs
+        for chunk_record, node in zip(chunk_records, nodes, strict=False):
+            node_id_map[node.node_id] = str(chunk_record.id)
+
+        # Update node IDs and relationships to use chunk IDs
+        for chunk_record, node in zip(chunk_records, nodes, strict=False):
+            node.node_id = str(chunk_record.id)
+            node.metadata["chunk_id"] = str(chunk_record.id)
+
+            # Update relationship IDs to point to new chunk IDs
+            if hasattr(node, "relationships"):
+                from llama_index.core.schema import NodeRelationship, RelatedNodeInfo
+
+                if NodeRelationship.PARENT in node.relationships:
+                    parent_rel = node.relationships[NodeRelationship.PARENT]
+                    old_parent_id = (
+                        parent_rel.node_id
+                        if hasattr(parent_rel, "node_id")
+                        else str(parent_rel)
+                    )
+                    if old_parent_id in node_id_map:
+                        node.relationships[NodeRelationship.PARENT] = RelatedNodeInfo(
+                            node_id=node_id_map[old_parent_id]
+                        )
+
+                if NodeRelationship.CHILD in node.relationships:
+                    child_rel = node.relationships[NodeRelationship.CHILD]
+                    if isinstance(child_rel, list):
+                        updated_children = []
+                        for child in child_rel:
+                            old_child_id = (
+                                child.node_id
+                                if hasattr(child, "node_id")
+                                else str(child)
+                            )
+                            if old_child_id in node_id_map:
+                                updated_children.append(
+                                    RelatedNodeInfo(node_id=node_id_map[old_child_id])
+                                )
+                        if updated_children:
+                            node.relationships[NodeRelationship.CHILD] = (
+                                updated_children
+                            )
+                    else:
+                        old_child_id = (
+                            child_rel.node_id
+                            if hasattr(child_rel, "node_id")
+                            else str(child_rel)
+                        )
+                        if old_child_id in node_id_map:
+                            node.relationships[NodeRelationship.CHILD] = (
+                                RelatedNodeInfo(node_id=node_id_map[old_child_id])
+                            )
+
         if await self._check_cancel(session, job):
-            # Cleanup document
             document.status = "FAILED"
             await session.commit()
             return
@@ -440,82 +485,24 @@ class IngestionRunner:
             + STAGE_WEIGHTS["EMBEDDING"],
         )
 
-        from langchain_core.documents import Document as VectorDocument
-
-        from .engine import get_engine_for_kb
-
-        # Get the appropriate engine for this KB (respects engine_type config)
-        engine = get_engine_for_kb(kb.embedding_config)
-        collection_name = f"kb_{job.knowledge_base_id}"
-
-        # Build vector documents with periodic cancel checks and progress updates
-        vector_documents = []
-        upsert_base = embedding_base + int(
-            embedding_weight * 0.5
-        )  # 50% of embedding for building
-        upsert_weight = STAGE_WEIGHTS["UPSERTING"]
-
-        for i, chunk_record in enumerate(chunk_records):
-            # Periodic cancel check during vector doc creation
-            if i > 0 and i % CANCEL_CHECK_INTERVAL == 0:
-                if await self._check_cancel(session, job):
-                    document.status = "FAILED"
-                    await session.commit()
-                    return
-
-            # Periodic progress update during upsert preparation
-            if i > 0 and i % PROGRESS_UPDATE_INTERVAL == 0:
-                progress_pct = upsert_base + int(
-                    (i / total_chunks) * upsert_weight * 0.5
-                )
-                job.progress = progress_pct
-                job.processed_items = i
-                await session.commit()
-
-                await self._emit_event(
-                    session,
-                    "progress",
-                    {
-                        "stage": "UPSERTING",
-                        "progress": progress_pct,
-                        "processed_items": i,
-                        "total_items": total_chunks,
-                    },
-                )
-
-            vector_documents.append(
-                VectorDocument(
-                    id=str(chunk_record.id),
-                    page_content=chunk_record.content,
-                    metadata={
-                        "chunk_id": str(chunk_record.id),
-                        "document_id": str(document.id),
-                        "chunk_index": chunk_record.chunk_index,
-                        "knowledge_base_id": str(job.knowledge_base_id),
-                        **chunk_record.chunk_metadata,
-                    },
-                )
-            )
-
-        # Emit event before vector store operation (this is where embedding happens)
-        job.progress = upsert_base + int(upsert_weight * 0.5)
-        await session.commit()
         await self._emit_event(
             session,
             "progress",
             {
                 "stage": "UPSERTING",
-                "progress": job.progress,
-                "message": "Embedding and upserting to vector store...",
-                "processed_items": len(chunk_records),
-                "total_items": total_chunks,
+                "message": "Indexing to vector store...",
+                "processed_items": len(nodes),
+                "total_items": len(nodes),
             },
         )
 
-        await engine.index_documents(
-            collection_name=collection_name,
-            documents=vector_documents,
-            embedding_function=embedder,
+        # Index using LlamaIndex index manager
+        await self.index_manager.add_nodes(
+            kb_id=job.knowledge_base_id,
+            nodes=nodes,
+            embed_model=embed_model,
+            store_type=kb.vector_store_type,
+            embed_dim=embed_dim,
         )
 
         # Mark success
@@ -550,14 +537,19 @@ class IngestionRunner:
         profile_id: str | None,
         clean_data: bool,
         max_rows: int = 50000,
+        preprocessing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Parse CSV/XLSX file and return row data."""
-        from io import BytesIO
-
-        import pandas as pd
-
-        # Download file
         from airbeeps.files.storage import storage_service
+
+        preprocessing = preprocessing or {}
+
+        # Get preprocessing options
+        sheet_names_filter = preprocessing.get(
+            "sheet_names"
+        )  # List of sheet names to process
+        header_row = preprocessing.get("header_row", 0)
+        skip_rows = preprocessing.get("skip_rows", 0)
 
         file_bytes, _ = await storage_service.download_file(job.file_path)
         if isinstance(file_bytes, BytesIO):
@@ -565,69 +557,91 @@ class IngestionRunner:
         else:
             file_bytes = BytesIO(file_bytes)
 
-        # Read Excel/CSV
+        all_dataframes = []
+        all_sheet_names = []
+
         if file_type == "csv":
-            df = pd.read_csv(file_bytes)
-            sheet_name = "Sheet1"
+            df = pd.read_csv(file_bytes, header=header_row)
+            if skip_rows > 0:
+                df = df.iloc[skip_rows:]
+            all_dataframes.append(df)
+            all_sheet_names.append("Sheet1")
         else:
-            sheets = pd.read_excel(file_bytes, sheet_name=None)
+            sheets = pd.read_excel(file_bytes, sheet_name=None, header=header_row)
             if not sheets:
                 raise ValueError("No sheets found in Excel file")
-            sheet_name = next(iter(sheets.keys()))
-            df = sheets[sheet_name]
 
-        # Drop empty columns
-        df = df.dropna(axis=1, how="all")
+            # Filter sheets if specified
+            for sheet_name, df in sheets.items():
+                if sheet_names_filter and sheet_name not in sheet_names_filter:
+                    continue
 
-        # Enforce row limit
-        original_row_count = len(df)
-        if original_row_count > max_rows:
-            df = df.head(max_rows)
+                if skip_rows > 0:
+                    df = df.iloc[skip_rows:]
+
+                df = df.dropna(axis=1, how="all")
+                all_dataframes.append(df)
+                all_sheet_names.append(sheet_name)
+
+            if not all_dataframes:
+                # If filter excluded all sheets, use first sheet as fallback
+                first_sheet_name = next(iter(sheets.keys()))
+                df = sheets[first_sheet_name]
+                if skip_rows > 0:
+                    df = df.iloc[skip_rows:]
+                df = df.dropna(axis=1, how="all")
+                all_dataframes.append(df)
+                all_sheet_names.append(first_sheet_name)
+
+        # Combine dataframes (add sheet name to metadata in chunking phase)
+        combined_df = (
+            pd.concat(all_dataframes, ignore_index=True)
+            if len(all_dataframes) > 1
+            else all_dataframes[0]
+        )
+        combined_df = combined_df.dropna(axis=1, how="all")
+
+        if len(combined_df) > max_rows:
             await self._emit_event(
                 session,
                 "warning",
-                {
-                    "message": f"Truncated from {original_row_count} to {max_rows} rows (limit)",
-                },
+                {"message": f"Truncated from {len(combined_df)} to {max_rows} rows"},
             )
-            logger.warning(
-                f"Job {self.job_id}: Truncated {original_row_count} rows to {max_rows}"
-            )
+            combined_df = combined_df.head(max_rows)
 
+        sheet_summary = ", ".join(all_sheet_names)
         await self._emit_event(
             session,
             "log",
             {
-                "message": f"Parsed {len(df)} rows from {sheet_name}",
+                "message": f"Parsed {len(combined_df)} rows from {len(all_sheet_names)} sheet(s): {sheet_summary}"
             },
         )
 
-        # Resolve profile config (explicit -> KB default -> builtin default)
         profile_config, profile_name = await self._resolve_profile_config(
-            session=session,
-            knowledge_base_id=job.knowledge_base_id,
-            profile_id=profile_id,
-            file_type=file_type,
+            session, job.knowledge_base_id, profile_id, file_type
         )
         if profile_name:
             await self._emit_event(
                 session,
                 "log",
-                {
-                    "message": f"Using ingestion profile: {profile_name}",
-                },
+                {"message": f"Using ingestion profile: {profile_name}"},
             )
 
         return {
             "title": job.original_filename,
-            "content": f"Excel source: {job.original_filename}",
+            "content": f"Tabular source: {job.original_filename}",
             "metadata": {
                 "source_type": "file",
                 "original_filename": job.original_filename,
-                "sheet": sheet_name,
+                "sheets": all_sheet_names,
+                "sheet": all_sheet_names[0] if len(all_sheet_names) == 1 else None,
             },
-            "dataframe": df,
-            "sheet_name": sheet_name,
+            "dataframes": list(zip(all_sheet_names, all_dataframes, strict=False)),
+            "dataframe": combined_df,  # Keep for backward compatibility
+            "sheet_name": all_sheet_names[0]
+            if len(all_sheet_names) == 1
+            else "Combined",
             "profile_config": profile_config,
         }
 
@@ -638,8 +652,7 @@ class IngestionRunner:
         content_extractor,
         max_pdf_pages: int = 500,
     ) -> dict[str, Any]:
-        """Parse generic file (TXT, MD, DOCX, etc.) and return content."""
-        # Pass max_pdf_pages to content extractor for PDF truncation
+        """Parse generic file and return content."""
         _, content = await content_extractor.extract_from_file_path(
             job.file_path, job.original_filename, max_pdf_pages=max_pdf_pages
         )
@@ -647,9 +660,7 @@ class IngestionRunner:
         await self._emit_event(
             session,
             "log",
-            {
-                "message": f"Extracted {len(content)} characters",
-            },
+            {"message": f"Extracted {len(content)} characters"},
         )
 
         return {
@@ -667,26 +678,33 @@ class IngestionRunner:
         job: IngestionJob,
         content_extractor,
         max_pdf_pages: int = 500,
+        preprocessing: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Parse PDF file with page-level tracking."""
+        """Parse PDF with page-level tracking."""
+        preprocessing = preprocessing or {}
+
+        # Apply preprocessing overrides
+        effective_max_pages = preprocessing.get("pdf_max_pages") or max_pdf_pages
+        page_range = preprocessing.get("pdf_page_range")
+
         try:
-            # Use page-level PDF extraction
             title, content, pages = await content_extractor.extract_pdf_with_pages(
-                job.file_path, job.original_filename, max_pages=max_pdf_pages
+                job.file_path,
+                job.original_filename,
+                max_pages=effective_max_pages,
+                page_range=page_range,
             )
 
             await self._emit_event(
                 session,
                 "log",
-                {
-                    "message": f"Extracted {len(pages)} pages, {len(content)} characters",
-                },
+                {"message": f"Extracted {len(pages)} pages, {len(content)} characters"},
             )
 
             return {
                 "title": title or job.original_filename,
                 "content": content,
-                "pages": pages,  # List of {"page": int, "text": str}
+                "pages": pages,
                 "metadata": {
                     "source_type": "file",
                     "original_filename": job.original_filename,
@@ -694,8 +712,7 @@ class IngestionRunner:
                 },
             }
         except Exception as e:
-            logger.warning(f"PDF page extraction failed, falling back to generic: {e}")
-            # Fallback to generic extraction without page tracking
+            logger.warning(f"PDF page extraction failed: {e}")
             return await self._parse_generic(
                 session, job, content_extractor, max_pdf_pages
             )
@@ -707,53 +724,143 @@ class IngestionRunner:
         kb: KnowledgeBase,
         parsed_data: dict[str, Any],
         clean_data: bool,
-    ) -> list[dict[str, Any]]:
-        """Create chunks from tabular data using TabularProfileEngine."""
-        from .tabular_profile import get_profile_engine
-
+        embed_info: dict[str, Any],
+    ) -> list[TextNode]:
+        """Create LlamaIndex nodes from tabular data."""
         df = parsed_data["dataframe"]
         sheet_name = parsed_data["sheet_name"]
-        profile_config = parsed_data.get("profile_config")
 
-        # Use TabularProfileEngine for profile-driven processing
-        profile_engine = get_profile_engine(profile_config)
+        nodes = []
+        for idx, row in df.iterrows():
+            row_text = self._row_to_text(row, df.columns, clean_data)
+            if not row_text.strip():
+                continue
 
-        row_chunks = profile_engine.process_dataframe(
-            df=df,
-            sheet_name=sheet_name,
-            file_path=job.file_path,
-            file_type=job.file_type or "unknown",
-            original_filename=job.original_filename,
-            title=job.original_filename,
-            clean_data=clean_data,
+            row_number = int(idx) + 2
+
+            node = TextNode(
+                text=row_text,
+                metadata={
+                    "knowledge_base_id": str(job.knowledge_base_id),
+                    "title": job.original_filename,
+                    "sheet": sheet_name,
+                    "row_number": row_number,
+                    "file_path": job.file_path,
+                    "file_type": job.file_type,
+                    **embed_info,
+                },
+            )
+            nodes.append(node)
+
+        return nodes
+
+    async def _chunk_generic(
+        self,
+        session: AsyncSession,
+        job: IngestionJob,
+        kb: KnowledgeBase,
+        doc_processor: DocumentProcessor,
+        parsed_data: dict[str, Any],
+        embed_info: dict[str, Any],
+        preprocessing: dict[str, Any] | None = None,
+    ) -> list[TextNode]:
+        """Create LlamaIndex nodes from generic content."""
+        preprocessing = preprocessing or {}
+
+        # Get chunking overrides from preprocessing config
+        chunking_strategy = preprocessing.get("chunking_strategy", "auto")
+        chunk_size = preprocessing.get("chunk_size_override")
+        chunk_overlap = preprocessing.get("chunk_overlap_override")
+
+        content = parsed_data["content"]
+        base_metadata = {
+            "knowledge_base_id": str(job.knowledge_base_id),
+            "title": job.original_filename,
+            "file_path": job.file_path,
+            "file_type": job.file_type,
+            **embed_info,
+            **parsed_data.get("metadata", {}),
+        }
+
+        nodes = doc_processor.process_text(
+            content=content,
+            metadata=base_metadata,
+            use_semantic=settings.RAG_ENABLE_SEMANTIC_CHUNKING,
+            use_hierarchical=settings.RAG_ENABLE_HIERARCHICAL,
+            strategy=chunking_strategy,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
 
-        # Add token counts and apply truncation if needed
-        from .chunker import DocumentChunker
+        return nodes
 
-        chunker = DocumentChunker()
+    async def _chunk_pdf(
+        self,
+        session: AsyncSession,
+        job: IngestionJob,
+        kb: KnowledgeBase,
+        doc_processor: DocumentProcessor,
+        parsed_data: dict[str, Any],
+        embed_info: dict[str, Any],
+        preprocessing: dict[str, Any] | None = None,
+    ) -> list[TextNode]:
+        """Create LlamaIndex nodes from PDF with page tracking."""
+        preprocessing = preprocessing or {}
 
-        chunks = []
-        for row_chunk in row_chunks:
-            row_text = row_chunk["content"]
-            row_meta = row_chunk["metadata"]
+        # Get chunking overrides from preprocessing config
+        chunking_strategy = preprocessing.get("chunking_strategy", "auto")
+        chunk_size = preprocessing.get("chunk_size_override")
+        chunk_overlap = preprocessing.get("chunk_overlap_override")
 
-            token_count = chunker._count_tokens(row_text)
+        pages = parsed_data.get("pages", [])
+        all_nodes = []
 
-            # Truncate if needed
-            if token_count > kb.chunk_size:
-                row_text = chunker._truncate_to_token_limit(row_text, kb.chunk_size)
-                token_count = kb.chunk_size
+        for page_data in pages:
+            page_number = page_data["page"]
+            page_text = page_data["text"]
 
-            chunks.append(
-                {
-                    "content": row_text,
-                    "metadata": row_meta,
-                    "token_count": token_count,
-                }
+            if not page_text.strip():
+                continue
+
+            page_metadata = {
+                "knowledge_base_id": str(job.knowledge_base_id),
+                "title": job.original_filename,
+                "file_path": job.file_path,
+                "file_type": job.file_type,
+                "page_number": page_number,
+                **embed_info,
+                **parsed_data.get("metadata", {}),
+            }
+
+            page_nodes = doc_processor.process_text(
+                content=page_text,
+                metadata=page_metadata,
+                use_semantic=settings.RAG_ENABLE_SEMANTIC_CHUNKING,
+                use_hierarchical=settings.RAG_ENABLE_HIERARCHICAL,
+                strategy=chunking_strategy,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
             )
+            all_nodes.extend(page_nodes)
 
-        return chunks
+        return all_nodes
+
+    def _row_to_text(self, row: pd.Series, columns: pd.Index, clean_data: bool) -> str:
+        """Convert DataFrame row to text."""
+        parts = []
+        for col in columns:
+            val = row.get(col)
+            if pd.isna(val):
+                continue
+            if isinstance(val, float) and val.is_integer():
+                val = str(int(val))
+            else:
+                val = str(val)
+            if clean_data:
+                val = apply_cleaners(val, enabled=True)
+            if val:
+                parts.append(f"{col}: {val}")
+        return "\n".join(parts)
 
     async def _resolve_profile_config(
         self,
@@ -762,26 +869,18 @@ class IngestionRunner:
         profile_id: str | None,
         file_type: str,
     ) -> tuple[dict[str, Any] | None, str | None]:
-        """
-        Resolve the ingestion profile config to use for a tabular file.
-
-        Priority:
-        1) Explicit profile_id (if valid and ACTIVE)
-        2) KB-specific default profile (is_default=True)
-        3) Global builtin default profile (is_builtin=True and is_default=True)
-        4) None (engine uses its internal default)
-        """
-        # 1) Explicit
+        """Resolve ingestion profile config."""
         if profile_id:
             try:
-                pid = uuid.UUID(str(profile_id))
-                profile = await session.get(IngestionProfile, pid)
+                profile = await session.get(
+                    IngestionProfile, uuid.UUID(str(profile_id))
+                )
                 if profile and profile.status == "ACTIVE":
                     return profile.config, profile.name
             except Exception:
-                logger.warning(f"Invalid profile_id on job {self.job_id}: {profile_id}")
+                pass
 
-        # 2) KB default
+        # KB default
         try:
             result = await session.execute(
                 select(IngestionProfile).where(
@@ -795,10 +894,10 @@ class IngestionRunner:
             kb_default = result.scalar_one_or_none()
             if kb_default:
                 return kb_default.config, kb_default.name
-        except Exception as e:
-            logger.warning(f"Failed to load KB default profile: {e}")
+        except Exception:
+            pass
 
-        # 3) Builtin default (select in Python to avoid JSON contains portability issues)
+        # Builtin default
         try:
             result = await session.execute(
                 select(IngestionProfile).where(
@@ -810,99 +909,13 @@ class IngestionRunner:
                     )
                 )
             )
-            builtin_defaults = result.scalars().all()
-            for p in builtin_defaults:
+            for p in result.scalars().all():
                 if not p.file_types or file_type in (p.file_types or []):
                     return p.config, p.name
-        except Exception as e:
-            logger.warning(f"Failed to load builtin default profile: {e}")
+        except Exception:
+            pass
 
         return None, None
-
-    async def _chunk_generic(
-        self,
-        session: AsyncSession,
-        job: IngestionJob,
-        kb: KnowledgeBase,
-        chunker,
-        parsed_data: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Create chunks from generic text content."""
-        content = parsed_data["content"]
-        title = parsed_data["title"]
-        base_metadata = parsed_data.get("metadata", {})
-
-        raw_chunks = chunker.chunk_document(
-            content,
-            chunk_size=kb.chunk_size,
-            chunk_overlap=kb.chunk_overlap,
-            max_tokens_per_chunk=kb.chunk_size,
-            metadata={
-                "title": title,
-                "file_path": job.file_path,
-                "file_type": job.file_type,
-                **base_metadata,
-            },
-        )
-
-        return [
-            {
-                "content": chunk.content,
-                "metadata": chunk.metadata,
-                "token_count": chunk.token_count,
-            }
-            for chunk in raw_chunks
-        ]
-
-    async def _chunk_pdf(
-        self,
-        session: AsyncSession,
-        job: IngestionJob,
-        kb: KnowledgeBase,
-        chunker,
-        parsed_data: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """Create chunks from PDF with page number tracking."""
-        pages = parsed_data.get("pages", [])
-        title = parsed_data["title"]
-        base_metadata = parsed_data.get("metadata", {})
-        all_chunks = []
-
-        for page_data in pages:
-            page_number = page_data["page"]
-            page_text = page_data["text"]
-
-            if not page_text.strip():
-                continue
-
-            # Chunk this page's content
-            page_chunks = chunker.chunk_document(
-                page_text,
-                chunk_size=kb.chunk_size,
-                chunk_overlap=kb.chunk_overlap,
-                max_tokens_per_chunk=kb.chunk_size,
-                metadata={
-                    "title": title,
-                    "file_path": job.file_path,
-                    "file_type": job.file_type,
-                    "page_number": page_number,  # Track the source page
-                    **base_metadata,
-                },
-            )
-
-            for chunk in page_chunks:
-                all_chunks.append(
-                    {
-                        "content": chunk.content,
-                        "metadata": chunk.metadata,
-                        "token_count": chunk.token_count,
-                    }
-                )
-
-        logger.info(
-            f"Created {len(all_chunks)} chunks from {len(pages)} PDF pages for {job.original_filename}"
-        )
-        return all_chunks
 
     async def _update_stage(
         self,
@@ -919,10 +932,7 @@ class IngestionRunner:
         await self._emit_event(
             session,
             "stage_change",
-            {
-                "stage": stage,
-                "progress": base_progress,
-            },
+            {"stage": stage, "progress": base_progress},
         )
 
     async def _emit_event(
@@ -941,45 +951,31 @@ class IngestionRunner:
         )
         session.add(event)
         await session.commit()
-
-        logger.debug(f"Job {self.job_id} event: {event_type} - {payload}")
+        logger.debug(f"Job {self.job_id} event: {event_type}")
 
     async def _check_cancel(self, session: AsyncSession, job: IngestionJob) -> bool:
-        """Check if cancellation was requested and handle it.
-
-        Returns True if job was cancelled, False otherwise.
-        Caller should return immediately if True is returned.
-        """
-        # Refresh to see cancel_requested written by another request/session
+        """Check if cancellation was requested."""
         try:
             await session.refresh(job)
         except Exception:
-            # If refresh fails, fall back to in-process cancel check only
             pass
 
-        cancel_requested = False
-        try:
-            cancel_requested = bool((job.job_config or {}).get("cancel_requested"))
-        except Exception:
-            cancel_requested = False
+        cancel_requested = bool((job.job_config or {}).get("cancel_requested"))
 
         if not (self._cancel_check() or cancel_requested):
             return False
 
-        # Mark as cancelled directly (don't spawn separate task)
         await self._mark_cancelled(session, job)
         return True
 
     async def _mark_cancelled(self, session: AsyncSession, job: IngestionJob) -> None:
         """Mark job as cancelled."""
-        # Best-effort cleanup: if we already created a document/chunks, remove vectors and soft-delete the document
         try:
             if job.document_id:
                 document = await session.get(Document, job.document_id)
                 if document:
                     document.status = "DELETED"
 
-                # Delete vectors for this document's chunks (so canceled ingest doesn't pollute retrieval)
                 result = await session.execute(
                     select(DocumentChunk.id).where(
                         DocumentChunk.document_id == job.document_id
@@ -987,36 +983,24 @@ class IngestionRunner:
                 )
                 chunk_ids = [str(cid) for (cid,) in result.all()]
                 if chunk_ids:
-                    from .engine import get_engine_for_kb
-
                     kb = await session.get(KnowledgeBase, job.knowledge_base_id)
-                    engine = get_engine_for_kb(kb.embedding_config if kb else None)
-                    collection_name = f"kb_{job.knowledge_base_id}"
-                    await engine.delete_documents(
-                        collection_name=collection_name,
-                        document_ids=chunk_ids,
+                    await self.index_manager.delete_nodes(
+                        kb_id=job.knowledge_base_id,
+                        node_ids=chunk_ids,
+                        store_type=kb.vector_store_type if kb else None,
                     )
         except Exception as e:
-            logger.warning(
-                f"Cancel cleanup failed for job {self.job_id}: {e}", exc_info=True
-            )
+            logger.warning(f"Cancel cleanup failed: {e}")
 
         job.status = "CANCELED"
         job.stage = None
         await session.commit()
 
-        await self._emit_event(
-            session,
-            "canceled",
-            {
-                "job_id": str(self.job_id),
-            },
-        )
-
+        await self._emit_event(session, "canceled", {"job_id": str(self.job_id)})
         logger.info(f"Ingestion job {self.job_id} was cancelled")
 
     async def _mark_failed(self, session: AsyncSession, error: str) -> None:
-        """Mark job as failed with error message."""
+        """Mark job as failed."""
         job = await session.get(IngestionJob, self.job_id)
         if job:
             job.status = "FAILED"
@@ -1035,25 +1019,18 @@ class IngestionRunner:
 
     def _infer_file_type(self, filename: str | None, file_path: str) -> str:
         """Infer file type from filename or path."""
-        name = filename or file_path
-        if not name:
-            return "unknown"
-
-        name_lower = name.lower()
-        if name_lower.endswith(".pdf"):
-            return "pdf"
-        if name_lower.endswith(".xlsx"):
-            return "xlsx"
-        if name_lower.endswith(".xls"):
-            return "xls"
-        if name_lower.endswith(".csv"):
-            return "csv"
-        if name_lower.endswith(".docx"):
-            return "docx"
-        if name_lower.endswith(".doc"):
-            return "doc"
-        if name_lower.endswith(".txt"):
-            return "txt"
-        if name_lower.endswith(".md"):
-            return "md"
+        name = (filename or file_path or "").lower()
+        ext_map = {
+            ".pdf": "pdf",
+            ".xlsx": "xlsx",
+            ".xls": "xls",
+            ".csv": "csv",
+            ".docx": "docx",
+            ".doc": "doc",
+            ".txt": "txt",
+            ".md": "md",
+        }
+        for ext, ftype in ext_map.items():
+            if name.endswith(ext):
+                return ftype
         return "unknown"

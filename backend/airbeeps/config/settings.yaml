@@ -1,0 +1,182 @@
+# Airbeeps Base Configuration
+# This file contains all application-level configuration with sensible defaults
+# Override via environment variables (AIRBEEPS_*) or environment-specific config files
+
+version: "1.0"
+
+# =============================================================================
+# Vector Store Configuration
+# =============================================================================
+vector_store:
+  # Default vector store type: qdrant | chromadb | pgvector | milvus
+  type: "qdrant"
+
+  # Qdrant Configuration
+  qdrant:
+    url: "http://localhost:6333"
+    api_key: ""  # Override via AIRBEEPS__VECTOR_STORE__QDRANT__API_KEY
+    prefer_grpc: true
+    persist_dir: "qdrant"  # Relative to DATA_ROOT
+
+  # ChromaDB Configuration (legacy support)
+  chroma:
+    server_host: ""  # Empty = embedded mode
+    server_port: 8500
+    persist_dir: "chroma"  # Relative to DATA_ROOT
+
+  # Milvus Configuration
+  milvus:
+    uri: "http://localhost:19530"
+    token: ""  # Override via AIRBEEPS__VECTOR_STORE__MILVUS__TOKEN
+    db_name: "default"
+
+  # PGVector Configuration
+  pgvector:
+    connection_string: ""  # Uses DATABASE_URL by default
+    schema: "public"
+
+# =============================================================================
+# RAG Configuration
+# =============================================================================
+rag:
+  # Feature Flags
+  features:
+    enable_hybrid_search: true
+    enable_reranking: true
+    enable_hierarchical: true
+    enable_semantic_chunking: true
+
+  # Reranker Settings
+  reranker:
+    model: "BAAI/bge-reranker-v2-m3"
+    top_n: 5
+
+  # Query Transformation
+  query_transform:
+    type: "multi_query"  # none | hyde | multi_query | step_back
+
+  # Semantic Chunking Settings
+  semantic_chunking:
+    breakpoint_threshold: 95  # Percentile threshold for semantic splits
+    buffer_size: 1  # Sentences to buffer for context
+
+  # Hierarchical Chunking Settings
+  hierarchical_chunking:
+    chunk_sizes: [2048, 512, 128]  # parent -> child -> leaf
+
+  # Hybrid Search Settings
+  hybrid_search:
+    alpha: 0.5  # Weight for dense vs sparse (0=sparse, 1=dense)
+    bm25_k1: 1.5
+    bm25_b: 0.75
+
+# =============================================================================
+# Agent Configuration
+# =============================================================================
+agent:
+  max_iterations: 10
+  timeout_seconds: 300
+  enable_memory: false
+
+# =============================================================================
+# MCP Configuration
+# =============================================================================
+mcp:
+  enabled: false
+  servers_config_path: "/app/mcp_servers.json"
+
+# =============================================================================
+# AI Registry Configuration
+# =============================================================================
+ai_registry:
+  allow_external: true
+
+# =============================================================================
+# File Storage Configuration
+# =============================================================================
+file_storage:
+  backend: "local"  # Options: local | s3
+
+  # Local Storage
+  local:
+    storage_root: "files"  # Relative to DATA_ROOT
+    public_base_url: ""  # Optional base URL for serving files
+
+  # S3/MinIO Configuration
+  s3:
+    endpoint_url: "http://minio:9000"
+    external_endpoint_url: ""  # External URL if different from internal
+    access_key_id: "minioadmin"  # Override via AIRBEEPS__FILE_STORAGE__S3__ACCESS_KEY_ID
+    secret_access_key: "minioadmin"  # Override via AIRBEEPS__FILE_STORAGE__S3__SECRET_ACCESS_KEY
+    bucket_name: "test"
+    region: "us-east-1"
+    use_ssl: false
+    addressing_style: "path"
+    signature_version: "s3v4"
+
+# =============================================================================
+# File Upload Settings
+# =============================================================================
+file_upload:
+  max_file_size: 10485760  # 10MB in bytes
+  allowed_image_extensions:
+    - ".jpg"
+    - ".jpeg"
+    - ".png"
+    - ".webp"
+    - ".gif"
+    - ".svg"
+  allowed_document_extensions:
+    - ".pdf"
+    - ".doc"
+    - ".docx"
+    - ".txt"
+    - ".md"
+    - ".rtf"
+
+# =============================================================================
+# Authentication & Security
+# =============================================================================
+auth:
+  # Token Configuration
+  access_token_lifetime_seconds: 1800  # 30 minutes
+  refresh_token_lifetime_seconds: 2592000  # 30 days
+  refresh_token_rotation_enabled: true
+  refresh_token_max_per_user: 5
+
+  # Cookie Configuration
+  access_token_cookie_name: "access-token"
+  refresh_token_cookie_name: "refresh-token"
+  refresh_token_cookie_path: "/api/v1/auth/refresh"
+
+  # Account Lockout (Brute Force Protection)
+  account_lockout:
+    max_attempts: 5
+    duration_minutes: 15
+
+# =============================================================================
+# Email Configuration
+# =============================================================================
+email:
+  enabled: false
+  server: ""
+  port: 587
+  username: ""
+  password: ""  # Override via AIRBEEPS__EMAIL__PASSWORD
+  starttls: true
+  ssl_tls: false
+  from: "noreply@example.com"
+
+# =============================================================================
+# OAuth Configuration
+# =============================================================================
+oauth:
+  create_user_without_email: true
+  require_email_verification: false
+  email_domain: "oauth.example.com"
+
+# =============================================================================
+# Logging
+# =============================================================================
+logging:
+  level: "INFO"  # DEBUG | INFO | WARNING | ERROR | CRITICAL

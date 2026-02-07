@@ -277,3 +277,83 @@ async def preview_pdf_page(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to render PDF page: {exc}",
         )
+
+
+@router.get(
+    "/chunks/{chunk_id}/preview",
+    summary="Preview a chunk by ID",
+    description="Returns chunk content and metadata for citation preview. Requires ownership.",
+)
+async def preview_chunk(
+    chunk_id: uuid_pkg.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(current_active_user),
+):
+    """
+    Fetch chunk content and metadata for preview in citations.
+    User must own the document containing the chunk.
+    """
+    logger.debug(
+        "User %s previewing chunk %s",
+        current_user.id,
+        chunk_id,
+    )
+    try:
+        from airbeeps.rag.models import Document, DocumentChunk
+
+        # Get the chunk
+        chunk = await session.get(DocumentChunk, chunk_id)
+        if not chunk:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Chunk not found",
+            )
+
+        # Get document and verify ownership
+        document = await session.get(Document, chunk.document_id)
+        if not document:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found",
+            )
+
+        if document.owner_id != current_user.id and not current_user.is_superuser:
+            logger.warning(
+                "User %s denied access to chunk %s", current_user.id, chunk_id
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied",
+            )
+
+        # Extract useful metadata
+        metadata = chunk.chunk_metadata or {}
+
+        return {
+            "chunk_id": str(chunk.id),
+            "document_id": str(document.id),
+            "document_title": document.title,
+            "file_type": document.file_type,
+            "file_path": document.file_path,
+            "chunk_index": chunk.chunk_index,
+            "content": chunk.content,
+            "token_count": chunk.token_count,
+            "page_number": metadata.get("page_number"),
+            "sheet": metadata.get("sheet"),
+            "row_number": metadata.get("row_number"),
+            "metadata": metadata,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Failed to preview chunk %s: %s",
+            chunk_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to preview chunk: {exc}",
+        )

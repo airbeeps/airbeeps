@@ -11,7 +11,13 @@ from sqlalchemy.orm import selectinload
 
 from airbeeps.agents.tools.registry import LocalToolRegistry
 from airbeeps.ai_models.models import Model
-from airbeeps.assistants.models import Assistant, AssistantModeEnum, Conversation
+from airbeeps.assistants.models import (
+    Assistant,
+    AssistantModeEnum,
+    Conversation,
+    Message,
+    MessageTypeEnum,
+)
 from airbeeps.auth import current_active_user
 from airbeeps.database import get_async_session
 from airbeeps.rag.models import KnowledgeBase
@@ -558,7 +564,7 @@ async def get_assistant_stats(
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(current_active_user),
 ):
-    """Get statistics for an assistant"""
+    """Get comprehensive statistics for an assistant including usage data."""
     try:
         assistant_result = await session.execute(
             select(Assistant).where(Assistant.id == assistant_id)
@@ -595,10 +601,64 @@ async def get_assistant_stats(
         )
         active_conversations = active_conv_result.scalar() or 0
 
+        # Get all conversation IDs for this assistant
+        conv_ids_result = await session.execute(
+            select(Conversation.id).where(Conversation.assistant_id == assistant_id)
+        )
+        conversation_ids = [row[0] for row in conv_ids_result.all()]
+
+        # Initialize usage stats
+        total_messages = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_execution_time_ms = 0
+        assistant_message_count = 0
+
+        if conversation_ids:
+            # Get message count
+            msg_count_result = await session.execute(
+                select(func.count(Message.id)).where(
+                    Message.conversation_id.in_(conversation_ids)
+                )
+            )
+            total_messages = msg_count_result.scalar() or 0
+
+            # Get all assistant messages to extract token/timing data from extra_data
+            messages_result = await session.execute(
+                select(Message.extra_data).where(
+                    and_(
+                        Message.conversation_id.in_(conversation_ids),
+                        Message.message_type == MessageTypeEnum.ASSISTANT,
+                    )
+                )
+            )
+
+            for (extra_data,) in messages_result.all():
+                if extra_data:
+                    token_usage = extra_data.get("token_usage", {})
+                    total_input_tokens += token_usage.get("input_tokens", 0) or 0
+                    total_output_tokens += token_usage.get("output_tokens", 0) or 0
+                    exec_time = extra_data.get("execution_time_ms", 0) or 0
+                    if exec_time > 0:
+                        total_execution_time_ms += exec_time
+                        assistant_message_count += 1
+
+        # Calculate average response time
+        avg_response_time_ms = (
+            total_execution_time_ms / assistant_message_count
+            if assistant_message_count > 0
+            else 0
+        )
+
         return {
             "assistant_id": assistant_id,
             "total_conversations": conversation_count,
             "active_conversations": active_conversations,
+            "total_messages": total_messages,
+            "total_input_tokens": total_input_tokens,
+            "total_output_tokens": total_output_tokens,
+            "total_tokens": total_input_tokens + total_output_tokens,
+            "avg_response_time_ms": round(avg_response_time_ms, 2),
             "status": assistant.status.value,
             "is_public": assistant.is_public,
             "created_at": assistant.created_at,

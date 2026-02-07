@@ -44,6 +44,16 @@ system_configs:
     description: "Show agent thinking traces in chat messages"
     is_public: true
     is_enabled: true
+  - key: ui_show_model_selector
+    value: true
+    description: "Show model selector dropdown in chat header"
+    is_public: true
+    is_enabled: true
+  - key: ui_show_web_search_toggle
+    value: true
+    description: "Show web search toggle button in chat input"
+    is_public: true
+    is_enabled: true
   - key: ui_generate_followup_questions
     value: false
     description: "Generate follow-up question suggestions after assistant responses"
@@ -64,6 +74,11 @@ system_configs:
   - key: ui_show_signup_terms
     value: false
     description: "Show Terms of Use and Privacy Policy links on signup form"
+    is_public: true
+    is_enabled: true
+  - key: ai_registry_allow_external
+    value: true
+    description: "Allow external registry lookups for providers and HF Hub search"
     is_public: true
     is_enabled: true
 
@@ -221,7 +236,8 @@ ingestion_profiles:
           aliases: ["sku", "product_sku", "Item Number", "ItemNumber", "ID"]
         - name: "Product Name"
           type: "string"
-          aliases: ["name", "Name", "ProductName", "Item Name", "ItemName", "Title"]
+          aliases:
+            ["name", "Name", "ProductName", "Item Name", "ItemName", "Title"]
         - name: "Description"
           type: "string"
           aliases: ["desc", "Details", "product_description"]
@@ -283,3 +299,172 @@ ingestion_profiles:
         omit_empty: true
         field_order: []
         custom_template: "Question: {{ Question }}\nAnswer: {{ Answer }}"
+
+# Pre-configured MCP Servers (Live Connectors)
+# These servers are disabled by default - users must configure env vars first
+mcp_servers:
+  - name: github
+    display_name: GitHub
+    description: "Access GitHub repositories, issues, pull requests, and code search. Requires a Personal Access Token with appropriate scopes."
+    server_type: STDIO
+    connection_config:
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-github"]
+      env:
+        GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+    is_active: false
+    extra_data:
+      category: "developer"
+      icon: "github"
+      setup_instructions: |
+        1. Go to GitHub Settings > Developer settings > Personal access tokens
+        2. Generate a new token (classic) with scopes: repo, read:user
+        3. Set the GITHUB_TOKEN environment variable
+      required_env_vars:
+        - name: GITHUB_TOKEN
+          description: "GitHub Personal Access Token"
+          docs_url: "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens"
+
+  - name: notion
+    display_name: Notion
+    description: "Query Notion pages and databases. Enables reading and searching your Notion workspace."
+    server_type: STDIO
+    connection_config:
+      command: npx
+      args: ["-y", "@notionhq/notion-mcp-server"]
+      env:
+        OPENAPI_MCP_HEADERS: '{"Authorization": "Bearer ${NOTION_API_KEY}", "Notion-Version": "2022-06-28"}'
+    is_active: false
+    extra_data:
+      category: "productivity"
+      icon: "notion"
+      setup_instructions: |
+        1. Go to https://www.notion.so/my-integrations
+        2. Create a new integration and copy the Internal Integration Token
+        3. Share your pages/databases with the integration
+        4. Set the NOTION_API_KEY environment variable
+      required_env_vars:
+        - name: NOTION_API_KEY
+          description: "Notion Internal Integration Token"
+          docs_url: "https://developers.notion.com/docs/create-a-notion-integration"
+
+  - name: google-drive
+    display_name: Google Drive
+    description: "Search and read Google Drive files. Access documents, spreadsheets, and other files."
+    server_type: STDIO
+    connection_config:
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-gdrive"]
+      env:
+        GOOGLE_APPLICATION_CREDENTIALS: "${GOOGLE_CREDENTIALS_PATH}"
+    is_active: false
+    extra_data:
+      category: "productivity"
+      icon: "google-drive"
+      setup_instructions: |
+        1. Create a project in Google Cloud Console
+        2. Enable the Google Drive API
+        3. Create a service account and download JSON credentials
+        4. Set the GOOGLE_CREDENTIALS_PATH environment variable to the JSON file path
+      required_env_vars:
+        - name: GOOGLE_CREDENTIALS_PATH
+          description: "Path to Google service account JSON credentials file"
+          docs_url: "https://cloud.google.com/docs/authentication/getting-started"
+
+  - name: brave-search
+    display_name: Brave Search
+    description: "Web search using Brave Search API. Provides privacy-respecting search results."
+    server_type: STDIO
+    connection_config:
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-brave-search"]
+      env:
+        BRAVE_API_KEY: "${BRAVE_SEARCH_API_KEY}"
+    is_active: false
+    extra_data:
+      category: "search"
+      icon: "search"
+      setup_instructions: |
+        1. Sign up at https://brave.com/search/api/
+        2. Create an API key from the dashboard
+        3. Set the BRAVE_SEARCH_API_KEY environment variable
+      required_env_vars:
+        - name: BRAVE_SEARCH_API_KEY
+          description: "Brave Search API Key"
+          docs_url: "https://brave.com/search/api/"
+
+  - name: slack
+    display_name: Slack
+    description: "Access Slack workspace messages, channels, and users. Enables searching and reading Slack content."
+    server_type: STDIO
+    connection_config:
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-slack"]
+      env:
+        SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+        SLACK_TEAM_ID: "${SLACK_TEAM_ID}"
+    is_active: false
+    extra_data:
+      category: "communication"
+      icon: "slack"
+      setup_instructions: |
+        1. Create a Slack App at https://api.slack.com/apps
+        2. Add bot token scopes: channels:history, channels:read, users:read
+        3. Install the app to your workspace
+        4. Set SLACK_BOT_TOKEN and SLACK_TEAM_ID environment variables
+      required_env_vars:
+        - name: SLACK_BOT_TOKEN
+          description: "Slack Bot User OAuth Token (xoxb-...)"
+          docs_url: "https://api.slack.com/authentication/token-types"
+        - name: SLACK_TEAM_ID
+          description: "Slack Workspace/Team ID"
+          docs_url: "https://slack.com/help/articles/221769328-Locate-your-Slack-URL-or-ID"
+
+  - name: filesystem
+    display_name: File System
+    description: "Access local filesystem for reading and managing files. CAUTION: Grant limited directory access only."
+    server_type: STDIO
+    connection_config:
+      command: npx
+      args:
+        [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "${FILESYSTEM_ALLOWED_PATH:/app/uploads}",
+        ]
+      env: {}
+    is_active: false
+    extra_data:
+      category: "system"
+      icon: "folder"
+      security_level: "DANGEROUS"
+      setup_instructions: |
+        1. Set FILESYSTEM_ALLOWED_PATH to the directory you want to expose
+        2. WARNING: Only expose directories that are safe for AI access
+        3. Consider using read-only mounts in production
+      required_env_vars:
+        - name: FILESYSTEM_ALLOWED_PATH
+          description: "Root directory path to expose (default: /app/uploads)"
+          docs_url: "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem"
+
+  - name: sqlite
+    display_name: SQLite Database
+    description: "Query SQLite databases. Enables reading and querying local database files."
+    server_type: STDIO
+    connection_config:
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-sqlite", "${SQLITE_DB_PATH}"]
+      env: {}
+    is_active: false
+    extra_data:
+      category: "database"
+      icon: "database"
+      security_level: "MODERATE"
+      setup_instructions: |
+        1. Set SQLITE_DB_PATH to your SQLite database file path
+        2. Ensure the database file is accessible
+        3. Consider using a read-only copy for safety
+      required_env_vars:
+        - name: SQLITE_DB_PATH
+          description: "Path to SQLite database file"
+          docs_url: "https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite"

@@ -1,41 +1,126 @@
+"""
+RAG Service - SOTA LlamaIndex Implementation.
+
+Orchestrates the complete RAG pipeline:
+- Document ingestion with semantic/hierarchical chunking
+- Multi-vector-store support (Qdrant, ChromaDB, PGVector, Milvus)
+- Query transformation (HyDE, multi-query, step-back)
+- Hybrid retrieval (dense + BM25 with RRF fusion)
+- Cross-encoder reranking
+- Auto-merging for hierarchical chunks
+"""
+
 import logging
-import math
-import re
 import uuid
+from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Any
 
 import pandas as pd
-from langchain_core.documents import Document as VectorDocument
+from llama_index.core.schema import Document as LlamaDocument
+from llama_index.core.schema import NodeWithScore, TextNode
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from airbeeps.config import settings
 from airbeeps.files.service import FileService
 
-from .chunker import DocumentChunker
 from .cleaners import apply_cleaners
 from .content_extractor import DocumentContentExtractor
-from .embeddings import EmbeddingService
-from .engine import get_engine, get_engine_for_kb
+from .doc_processor import DocumentProcessor, get_document_processor
+from .embeddings import EmbeddingService, get_embedding_service
+from .hybrid_retriever import build_hybrid_retriever
+from .index_manager import IndexManager, get_index_manager
 from .models import Document, DocumentChunk, KnowledgeBase
-from .vector_store import ChromaVectorStore
+from .query_transform import QueryTransformer, QueryTransformType, get_query_transformer
+from .reranker import get_reranker
+from .stores import VectorStoreType
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class RetrievalResult:
+    """Result from a retrieval query."""
+
+    content: str
+    score: float
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    # Source info for citations
+    node_id: str | None = None
+    document_id: str | None = None
+    chunk_id: str | None = None
+    chunk_index: int | None = None
+    title: str | None = None
+
+    # Retrieval info
+    retrieval_sources: list[str] = field(default_factory=list)
+
+
+@dataclass
+class RetrievalConfig:
+    """Configuration for retrieval operations."""
+
+    k: int = 5
+    fetch_k: int | None = None
+    score_threshold: float | None = None
+
+    # Feature flags
+    use_hybrid: bool = True
+    use_rerank: bool = True
+    use_hierarchical: bool = True
+    query_transform: str = "multi_query"
+
+    # Reranker settings
+    reranker_model: str | None = None
+    rerank_top_n: int | None = None
+
+    # Hybrid settings
+    hybrid_alpha: float = 0.5
+
+    @classmethod
+    def from_settings(cls) -> "RetrievalConfig":
+        """Create config from application settings."""
+        return cls(
+            use_hybrid=settings.RAG_ENABLE_HYBRID_SEARCH,
+            use_rerank=settings.RAG_ENABLE_RERANKING,
+            use_hierarchical=settings.RAG_ENABLE_HIERARCHICAL,
+            query_transform=settings.RAG_QUERY_TRANSFORM_TYPE,
+            reranker_model=settings.RAG_RERANKER_MODEL,
+            rerank_top_n=settings.RAG_RERANKER_TOP_N,
+            hybrid_alpha=settings.RAG_HYBRID_ALPHA,
+        )
+
+
 class RAGService:
-    """RAG Core Service"""
+    """
+    SOTA RAG Service using LlamaIndex.
 
-    def __init__(self, session: AsyncSession, file_service: FileService | None = None):
+    Provides end-to-end RAG functionality:
+    - Knowledge base management
+    - Document ingestion with smart chunking
+    - Retrieval with advanced features
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        file_service: FileService | None = None,
+    ):
+        """
+        Initialize the RAG service.
+
+        Args:
+            session: SQLAlchemy async session
+            file_service: Optional file service for document access
+        """
         self.session = session
-        self.embedding_service = EmbeddingService()
-        self.chunker = DocumentChunker()
-        # Default engine for backward compatibility; KB-specific methods use get_engine_for_kb
-        self.vector_store = ChromaVectorStore()
-        self._default_engine = get_engine()
+        self.embedding_service = get_embedding_service()
+        self.index_manager = get_index_manager()
 
-        # If file service is not provided, create a new instance
+        # File handling
         if file_service:
             self.file_service = file_service
         else:
@@ -43,309 +128,866 @@ class RAGService:
 
         self.content_extractor = DocumentContentExtractor(self.file_service)
 
-    def _get_engine_for_kb(self, kb: "KnowledgeBase"):
-        """Get the appropriate RAG engine for a knowledge base."""
-        return get_engine_for_kb(kb.embedding_config)
+        # Document processor (initialized lazily with embedding model)
+        self._doc_processor: DocumentProcessor | None = None
 
-    async def _cleanup_vectors(
-        self, collection_name: str, chunk_ids: list[str]
-    ) -> None:
-        """Best-effort cleanup of vectors when failures happen."""
-        try:
-            if chunk_ids:
-                await self.vector_store.delete_documents(collection_name, chunk_ids)
-        except Exception as exc:
-            logger.warning(
-                "Failed to cleanup vectors for collection %s: %s",
-                collection_name,
-                exc,
+    async def _get_doc_processor(
+        self, embedding_model_id: str | None = None
+    ) -> DocumentProcessor:
+        """Get document processor with embedding model for semantic chunking."""
+        if embedding_model_id:
+            embed_model = await self.embedding_service.get_embed_model(
+                embedding_model_id
             )
+            return get_document_processor(embed_model=embed_model)
 
-    def _tokenize(self, text: str) -> list[str]:
-        return [t for t in re.split(r"[^A-Za-z0-9]+", text.lower()) if t]
+        if self._doc_processor is None:
+            self._doc_processor = get_document_processor()
 
-    def _bm25_rank(
-        self, query: str, corpus: dict[str, str], k1: float = 1.5, b: float = 0.75
-    ) -> list[tuple[str, float]]:
-        """
-        Minimal BM25 over an in-memory corpus (chunk_id -> text).
-        """
-        tokens = self._tokenize(query)
-        if not tokens or not corpus:
-            return []
+        return self._doc_processor
 
-        df: dict[str, int] = {}
-        doc_tokens: dict[str, list[str]] = {}
-        doc_lens: dict[str, int] = {}
-        for doc_id, text in corpus.items():
-            toks = self._tokenize(text)
-            doc_tokens[doc_id] = toks
-            doc_lens[doc_id] = len(toks) or 1
-            seen = set()
-            for t in toks:
-                if t in seen:
-                    continue
-                df[t] = df.get(t, 0) + 1
-                seen.add(t)
-
-        N = len(corpus)
-        avgdl = sum(doc_lens.values()) / float(N or 1)
-
-        def idf(term: str) -> float:
-            n_qi = df.get(term, 0)
-            return math.log((N - n_qi + 0.5) / (n_qi + 0.5) + 1)
-
-        scores: dict[str, float] = {}
-        for term in tokens:
-            if term not in df:
-                continue
-            term_idf = idf(term)
-            for doc_id, toks in doc_tokens.items():
-                freq = toks.count(term)
-                denom = freq + k1 * (1 - b + b * (doc_lens[doc_id] / avgdl))
-                score = term_idf * (freq * (k1 + 1)) / denom
-                scores[doc_id] = scores.get(doc_id, 0.0) + score
-
-        return sorted(scores.items(), key=lambda x: x[1], reverse=True)
-
-    async def _rerank_with_embeddings(
-        self,
-        query: str,
-        docs: list[VectorDocument],
-        embedder,
-        top_k: int,
-    ) -> list[VectorDocument]:
-        """
-        Lightweight rerank using embedding cosine similarity (approximation for cross-encoder).
-        """
-        if not docs:
-            return docs
-        top_k = min(top_k, len(docs))
-        try:
-            q_emb = embedder.embed_query(query)
-            contents = [d.page_content for d in docs[:top_k]]
-            d_embs = embedder.embed_documents(contents)
-
-            def cosine(a, b):
-                import numpy as np
-
-                a = np.array(a)
-                b = np.array(b)
-                denom = (np.linalg.norm(a) * np.linalg.norm(b)) or 1e-9
-                return float(np.dot(a, b) / denom)
-
-            scored = []
-            for doc, emb in zip(docs[:top_k], d_embs, strict=False):
-                score = cosine(q_emb, emb)
-                meta = doc.metadata or {}
-                meta["rerank_score"] = score
-                doc.metadata = meta
-                scored.append((doc, score))
-
-            scored.sort(key=lambda p: p[1], reverse=True)
-            return [d for d, _ in scored] + docs[top_k:]
-        except Exception as exc:
-            logger.warning("Rerank failed; returning original order: %s", exc)
-            return docs
-
-    def _generate_alt_queries(self, query: str, max_count: int = 3) -> list[str]:
-        """
-        Deterministic, low-risk alternative queries (no LLM dependency).
-        """
-        alts = [query.strip()]
-        simplified = re.sub(r"[^\w\s]", " ", query).strip()
-        if simplified and simplified.lower() != query.lower():
-            alts.append(simplified)
-        parts = re.split(r"[.?!;]", query)
-        for p in parts:
-            p = p.strip()
-            if 20 <= len(p) <= 160 and p.lower() not in (a.lower() for a in alts):
-                alts.append(p)
-        seen = set()
-        uniq = []
-        for q in alts:
-            key = q.lower()
-            if key in seen or not q:
-                continue
-            seen.add(key)
-            uniq.append(q)
-            if len(uniq) >= max_count:
-                break
-        return uniq
-
-    def _infer_file_type(
-        self, filename: str | None, file_path: str | None
-    ) -> str | None:
-        """Infer file type from filename or path"""
-        if not filename and not file_path:
-            return None
-
-        # Prefer filename, then file_path
-        target_name = filename or file_path
-        if not target_name:
-            return None
-
-        # Extract file extension
-        from pathlib import Path
-
-        ext = Path(target_name).suffix.lower()
-
-        # Extension to file type mapping
-        ext_mapping = {
-            ".txt": "txt",
-            ".md": "md",
-            ".markdown": "md",
-            ".pdf": "pdf",
-            ".doc": "doc",
-            ".docx": "docx",
-            ".xls": "xls",
-            ".xlsx": "xlsx",
-            ".ppt": "ppt",
-            ".pptx": "pptx",
-            ".csv": "csv",
-            ".json": "json",
-            ".xml": "xml",
-            ".html": "html",
-            ".htm": "html",
-            ".rtf": "rtf",
-            ".odt": "odt",
-            ".ods": "ods",
-            ".odp": "odp",
-        }
-
-        return ext_mapping.get(ext)
+    # =========================================================================
+    # Knowledge Base Management
+    # =========================================================================
 
     async def create_knowledge_base(
         self,
         name: str,
         description: str | None,
         embedding_model_id: str | None,
-        chunk_size: int | None,
-        chunk_overlap: int | None,
         owner_id: uuid.UUID,
+        vector_store_type: str | None = None,
+        retrieval_config: dict[str, Any] | None = None,
     ) -> KnowledgeBase:
-        """Create knowledge base"""
+        """Create a new knowledge base."""
         logger.info(f"Creating knowledge base '{name}' for owner {owner_id}")
-        logger.debug(
-            f"KB params: embedding_model_id={embedding_model_id}, chunk_size={chunk_size}, chunk_overlap={chunk_overlap}"
+
+        # Check for existing KB with same name
+        existing = await self.session.execute(
+            select(KnowledgeBase).where(
+                and_(
+                    KnowledgeBase.name == name,
+                    KnowledgeBase.owner_id == owner_id,
+                    KnowledgeBase.status == "ACTIVE",
+                )
+            )
         )
-        try:
-            # Check if name already exists
-            existing_kb = await self.session.execute(
-                select(KnowledgeBase).where(
-                    and_(
-                        KnowledgeBase.name == name,
-                        KnowledgeBase.owner_id == owner_id,
-                        KnowledgeBase.status == "ACTIVE",
-                    )
-                )
-            )
-            if existing_kb.scalar_one_or_none():
-                logger.warning(
-                    f"Knowledge base with name '{name}' already exists for owner {owner_id}"
-                )
-                raise ValueError(f"Knowledge base with name '{name}' already exists")
+        if existing.scalar_one_or_none():
+            raise ValueError(f"Knowledge base with name '{name}' already exists")
 
-            kb_data = {
-                "name": name,
-                "description": description,
-                "owner_id": owner_id,
-                "embedding_model_id": embedding_model_id,
-                "chunk_size": chunk_size or 1000,
-                "chunk_overlap": chunk_overlap or 200,
-            }
+        kb = KnowledgeBase(
+            name=name,
+            description=description,
+            owner_id=owner_id,
+            embedding_model_id=embedding_model_id,
+            vector_store_type=vector_store_type or settings.VECTOR_STORE_TYPE,
+            retrieval_config=retrieval_config or {},
+        )
 
-            kb = KnowledgeBase(**kb_data)
+        self.session.add(kb)
+        await self.session.commit()
+        await self.session.refresh(kb)
 
-            self.session.add(kb)
-            await self.session.commit()
-            await self.session.refresh(kb)
+        logger.info(f"Created knowledge base: {kb.name} (ID: {kb.id})")
+        return kb
 
-            logger.info(f"Successfully created knowledge base: {kb.name} (ID: {kb.id})")
-            return kb
+    async def get_knowledge_base(
+        self,
+        kb_id: uuid.UUID,
+        owner_id: uuid.UUID | None = None,
+    ) -> KnowledgeBase | None:
+        """Get a knowledge base by ID."""
+        query = select(KnowledgeBase).where(
+            and_(KnowledgeBase.id == kb_id, KnowledgeBase.status == "ACTIVE")
+        )
+        if owner_id:
+            query = query.where(KnowledgeBase.owner_id == owner_id)
 
-        except Exception as e:
-            await self.session.rollback()
-            logger.error(
-                f"Failed to create knowledge base '{name}': {e}", exc_info=True
-            )
-            raise
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
 
     async def get_knowledge_bases(
-        self, owner_id: uuid.UUID, skip: int = 0, limit: int = 100
+        self,
+        owner_id: uuid.UUID,
+        skip: int = 0,
+        limit: int = 100,
     ) -> list[KnowledgeBase]:
-        """Get user's knowledge base list"""
-        logger.debug(
-            f"Retrieving knowledge bases for owner {owner_id}, skip={skip}, limit={limit}"
-        )
+        """Get all knowledge bases for an owner."""
         result = await self.session.execute(
             select(KnowledgeBase)
             .where(
                 and_(
-                    KnowledgeBase.owner_id == owner_id, KnowledgeBase.status == "ACTIVE"
+                    KnowledgeBase.owner_id == owner_id,
+                    KnowledgeBase.status == "ACTIVE",
                 )
             )
             .offset(skip)
             .limit(limit)
             .order_by(KnowledgeBase.created_at.desc())
         )
-        kbs = result.scalars().all()
-        logger.debug(f"Retrieved {len(kbs)} knowledge bases for owner {owner_id}")
-        return kbs
+        return list(result.scalars().all())
 
-    async def get_knowledge_base(
-        self, kb_id: uuid.UUID, owner_id: uuid.UUID | None = None
-    ) -> KnowledgeBase | None:
-        """Get specific knowledge base"""
-        if owner_id is not None:
-            # Query with permission check
-            result = await self.session.execute(
-                select(KnowledgeBase).where(
-                    and_(
-                        KnowledgeBase.id == kb_id,
-                        KnowledgeBase.owner_id == owner_id,
-                        KnowledgeBase.status == "ACTIVE",
-                    )
-                )
-            )
-        else:
-            # Query without permission check
-            result = await self.session.execute(
-                select(KnowledgeBase).where(
-                    and_(KnowledgeBase.id == kb_id, KnowledgeBase.status == "ACTIVE")
-                )
-            )
-        return result.scalar_one_or_none()
+    async def delete_knowledge_base(
+        self,
+        kb_id: uuid.UUID,
+        owner_id: uuid.UUID | None = None,
+    ) -> bool:
+        """Delete a knowledge base and its vector collection."""
+        kb = await self.get_knowledge_base(kb_id, owner_id)
+        if not kb:
+            return False
 
-    async def mark_kb_reindexed(self, kb_id: uuid.UUID) -> KnowledgeBase:
-        """Mark a knowledge base as reindexed (clears reindex_required)."""
-        result = await self.session.execute(
-            select(KnowledgeBase).where(KnowledgeBase.id == kb_id)
+        # Delete vector collection
+        await self.index_manager.delete_collection(
+            kb_id=kb_id,
+            store_type=kb.vector_store_type,
         )
-        kb = result.scalar_one_or_none()
+
+        # Soft delete KB
+        kb.status = "DELETED"
+        await self.session.commit()
+
+        logger.info(f"Deleted knowledge base: {kb_id}")
+        return True
+
+    # =========================================================================
+    # Document Ingestion
+    # =========================================================================
+
+    async def add_document(
+        self,
+        title: str,
+        content: str,
+        knowledge_base_id: uuid.UUID,
+        owner_id: uuid.UUID,
+        source_url: str | None = None,
+        file_path: str | None = None,
+        file_type: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        file_hash: str | None = None,
+    ) -> Document:
+        """Add a document to a knowledge base."""
+        logger.info(f"Adding document '{title}' to KB {knowledge_base_id}")
+
+        # Verify KB exists and belongs to user
+        kb = await self.get_knowledge_base(knowledge_base_id, owner_id)
+        if not kb:
+            raise ValueError("Knowledge base not found or access denied")
+
+        if not kb.embedding_model_id:
+            raise ValueError("Knowledge base embedding model is not configured")
+
+        # Create document record
+        document = Document(
+            title=title,
+            content=content,
+            knowledge_base_id=knowledge_base_id,
+            owner_id=owner_id,
+            source_url=source_url,
+            file_path=file_path,
+            file_type=file_type,
+            doc_metadata=metadata or {},
+            status="INDEXING",
+            file_hash=file_hash,
+        )
+
+        self.session.add(document)
+        await self.session.commit()
+        await self.session.refresh(document)
+
+        try:
+            # Get embedding model
+            (
+                embed_model,
+                embed_info,
+            ) = await self.embedding_service.get_embed_model_with_info(
+                str(kb.embedding_model_id)
+            )
+            embed_dim = embed_info.get("embed_dim", 384)
+
+            # Process content into nodes
+            doc_processor = await self._get_doc_processor(str(kb.embedding_model_id))
+
+            base_metadata = {
+                "document_id": str(document.id),
+                "knowledge_base_id": str(knowledge_base_id),
+                "title": title,
+                "file_path": file_path,
+                "file_type": file_type,
+                "source_url": source_url,
+                **embed_info,
+                **(metadata or {}),
+            }
+
+            nodes = doc_processor.process_text(
+                content=content,
+                metadata=base_metadata,
+                use_semantic=settings.RAG_ENABLE_SEMANTIC_CHUNKING,
+                use_hierarchical=settings.RAG_ENABLE_HIERARCHICAL,
+            )
+
+            # Save chunk records to database with original node IDs preserved
+            chunk_records = []
+            node_id_map = {}  # Maps original node_id -> chunk_id for relationship updates
+
+            for i, node in enumerate(nodes):
+                original_node_id = node.node_id
+
+                # Store relationships before any modifications
+                parent_id = None
+                child_ids = []
+                if hasattr(node, "relationships"):
+                    from llama_index.core.schema import NodeRelationship
+
+                    if NodeRelationship.PARENT in node.relationships:
+                        parent_rel = node.relationships[NodeRelationship.PARENT]
+                        parent_id = (
+                            parent_rel.node_id
+                            if hasattr(parent_rel, "node_id")
+                            else str(parent_rel)
+                        )
+                    if NodeRelationship.CHILD in node.relationships:
+                        child_rel = node.relationships[NodeRelationship.CHILD]
+                        if isinstance(child_rel, list):
+                            child_ids = [
+                                c.node_id if hasattr(c, "node_id") else str(c)
+                                for c in child_rel
+                            ]
+                        else:
+                            child_ids = [
+                                child_rel.node_id
+                                if hasattr(child_rel, "node_id")
+                                else str(child_rel)
+                            ]
+
+                chunk_record = DocumentChunk(
+                    content=node.get_content(),
+                    chunk_index=i,
+                    token_count=len(node.get_content().split()),
+                    document_id=document.id,
+                    chunk_metadata={
+                        "original_node_id": original_node_id,
+                        "parent_node_id": parent_id,
+                        "child_node_ids": child_ids,
+                        **node.metadata,
+                    },
+                )
+                chunk_records.append(chunk_record)
+                self.session.add(chunk_record)
+
+            await self.session.flush()
+
+            # Map original node IDs to chunk IDs
+            for chunk_record, node in zip(chunk_records, nodes, strict=False):
+                node_id_map[node.node_id] = str(chunk_record.id)
+
+            # Update node IDs and relationships to use chunk IDs
+            for chunk_record, node in zip(chunk_records, nodes, strict=False):
+                node.node_id = str(chunk_record.id)
+                node.metadata["chunk_id"] = str(chunk_record.id)
+
+                # Update relationship IDs to point to new chunk IDs
+                if hasattr(node, "relationships"):
+                    from llama_index.core.schema import (
+                        NodeRelationship,
+                        RelatedNodeInfo,
+                    )
+
+                    if NodeRelationship.PARENT in node.relationships:
+                        parent_rel = node.relationships[NodeRelationship.PARENT]
+                        old_parent_id = (
+                            parent_rel.node_id
+                            if hasattr(parent_rel, "node_id")
+                            else str(parent_rel)
+                        )
+                        if old_parent_id in node_id_map:
+                            node.relationships[NodeRelationship.PARENT] = (
+                                RelatedNodeInfo(node_id=node_id_map[old_parent_id])
+                            )
+
+                    if NodeRelationship.CHILD in node.relationships:
+                        child_rel = node.relationships[NodeRelationship.CHILD]
+                        if isinstance(child_rel, list):
+                            updated_children = []
+                            for child in child_rel:
+                                old_child_id = (
+                                    child.node_id
+                                    if hasattr(child, "node_id")
+                                    else str(child)
+                                )
+                                if old_child_id in node_id_map:
+                                    updated_children.append(
+                                        RelatedNodeInfo(
+                                            node_id=node_id_map[old_child_id]
+                                        )
+                                    )
+                            if updated_children:
+                                node.relationships[NodeRelationship.CHILD] = (
+                                    updated_children
+                                )
+                        else:
+                            old_child_id = (
+                                child_rel.node_id
+                                if hasattr(child_rel, "node_id")
+                                else str(child_rel)
+                            )
+                            if old_child_id in node_id_map:
+                                node.relationships[NodeRelationship.CHILD] = (
+                                    RelatedNodeInfo(node_id=node_id_map[old_child_id])
+                                )
+
+            # Index nodes in vector store
+            await self.index_manager.add_nodes(
+                kb_id=knowledge_base_id,
+                nodes=nodes,
+                embed_model=embed_model,
+                store_type=kb.vector_store_type,
+                embed_dim=embed_dim,
+            )
+
+            document.status = "ACTIVE"
+            await self.session.commit()
+
+            logger.info(
+                f"Added document '{title}' with {len(nodes)} chunks to KB {knowledge_base_id}"
+            )
+            return document
+
+        except Exception as e:
+            await self.session.rollback()
+            document.status = "FAILED"
+            await self.session.commit()
+            logger.error(f"Failed to add document '{title}': {e}", exc_info=True)
+            raise
+
+    async def add_document_from_file(
+        self,
+        file_path: str,
+        knowledge_base_id: uuid.UUID,
+        owner_id: uuid.UUID,
+        filename: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        dedup_strategy: str = "replace",
+        clean_data: bool = False,
+    ) -> tuple[Document, str, uuid.UUID | None]:
+        """Add a document from a file path."""
+        logger.info(
+            f"Adding document from file '{filename or file_path}' to KB {knowledge_base_id}"
+        )
+
+        # Get file record if exists
+        file_record = await self.file_service.get_file_by_path(file_path)
+        if file_record:
+            title = file_record.filename
+            file_hash = file_record.file_hash
+        else:
+            title = filename or file_path.split("/")[-1]
+            file_hash = None
+
+        # Handle deduplication
+        dedup_status = "created"
+        replaced_id: uuid.UUID | None = None
+
+        if file_hash:
+            existing = await self._get_document_by_hash(knowledge_base_id, file_hash)
+            if existing:
+                if dedup_strategy == "skip":
+                    return existing, "skipped", None
+                elif dedup_strategy == "replace":
+                    replaced_id = existing.id
+                    await self.delete_document(existing.id, owner_id)
+                    dedup_status = "replaced"
+
+        # Infer file type
+        file_type = self._infer_file_type(filename, file_path)
+
+        # Handle tabular files specially
+        if file_type in {"xls", "xlsx", "csv"}:
+            document = await self._add_tabular_document(
+                file_path=file_path,
+                title=title,
+                knowledge_base_id=knowledge_base_id,
+                owner_id=owner_id,
+                file_type=file_type,
+                file_hash=file_hash,
+                metadata=metadata,
+                clean_data=clean_data,
+            )
+            return document, dedup_status, replaced_id
+
+        # Extract content from file
+        _, content = await self.content_extractor.extract_from_file_path(
+            file_path, filename
+        )
+
+        document = await self.add_document(
+            title=title,
+            content=content,
+            knowledge_base_id=knowledge_base_id,
+            owner_id=owner_id,
+            file_path=file_path,
+            file_type=file_type,
+            metadata={
+                "source_type": "file",
+                "original_filename": filename,
+                **(metadata or {}),
+            },
+            file_hash=file_hash,
+        )
+
+        return document, dedup_status, replaced_id
+
+    async def _add_tabular_document(
+        self,
+        file_path: str,
+        title: str,
+        knowledge_base_id: uuid.UUID,
+        owner_id: uuid.UUID,
+        file_type: str,
+        file_hash: str | None,
+        metadata: dict[str, Any] | None,
+        clean_data: bool = False,
+    ) -> Document:
+        """Add a tabular (Excel/CSV) document with row-wise chunking."""
+        logger.info(f"Processing tabular file '{title}' for KB {knowledge_base_id}")
+
+        kb = await self.get_knowledge_base(knowledge_base_id, owner_id)
+        if not kb or not kb.embedding_model_id:
+            raise ValueError("Knowledge base not found or missing embedding model")
+
+        # Download file
+        file_bytes, _ = await self.content_extractor._download_file_from_storage(
+            file_path
+        )
+        if isinstance(file_bytes, BytesIO):
+            file_bytes.seek(0)
+        else:
+            file_bytes = BytesIO(file_bytes)
+
+        # Read data
+        if file_type == "csv":
+            df = pd.read_csv(file_bytes)
+            sheet_name = "Sheet1"
+        else:
+            sheets = pd.read_excel(file_bytes, sheet_name=None)
+            if not sheets:
+                raise ValueError("No sheets found in Excel file")
+            sheet_name = next(iter(sheets.keys()))
+            df = sheets[sheet_name]
+
+        df = df.dropna(axis=1, how="all")
+
+        # Create document record
+        document = Document(
+            title=title,
+            content=f"Tabular source: {title}",
+            knowledge_base_id=knowledge_base_id,
+            owner_id=owner_id,
+            file_path=file_path,
+            file_type=file_type,
+            doc_metadata=metadata or {},
+            status="INDEXING",
+            file_hash=file_hash,
+        )
+        self.session.add(document)
+        await self.session.commit()
+        await self.session.refresh(document)
+
+        try:
+            (
+                embed_model,
+                embed_info,
+            ) = await self.embedding_service.get_embed_model_with_info(
+                str(kb.embedding_model_id)
+            )
+            embed_dim = embed_info.get("embed_dim", 384)
+
+            # Create nodes from rows
+            nodes = []
+            chunk_records = []
+
+            for idx, row in df.iterrows():
+                row_text = self._row_to_text(row, df.columns, clean_data)
+                if not row_text.strip():
+                    continue
+
+                row_number = int(idx) + 2
+
+                node = TextNode(
+                    text=row_text,
+                    metadata={
+                        "document_id": str(document.id),
+                        "knowledge_base_id": str(knowledge_base_id),
+                        "title": title,
+                        "sheet": sheet_name,
+                        "row_number": row_number,
+                        "file_path": file_path,
+                        "file_type": file_type,
+                        **embed_info,
+                    },
+                )
+                nodes.append(node)
+
+                chunk_record = DocumentChunk(
+                    content=row_text,
+                    chunk_index=len(chunk_records),
+                    token_count=len(row_text.split()),
+                    document_id=document.id,
+                    chunk_metadata=node.metadata,
+                )
+                chunk_records.append(chunk_record)
+                self.session.add(chunk_record)
+
+            await self.session.flush()
+
+            # Update node IDs
+            for chunk_record, node in zip(chunk_records, nodes, strict=False):
+                node.node_id = str(chunk_record.id)
+                node.metadata["chunk_id"] = str(chunk_record.id)
+
+            # Index nodes
+            await self.index_manager.add_nodes(
+                kb_id=knowledge_base_id,
+                nodes=nodes,
+                embed_model=embed_model,
+                store_type=kb.vector_store_type,
+                embed_dim=embed_dim,
+            )
+
+            document.status = "ACTIVE"
+            await self.session.commit()
+
+            logger.info(f"Added tabular document '{title}' with {len(nodes)} rows")
+            return document
+
+        except Exception as e:
+            await self.session.rollback()
+            document.status = "FAILED"
+            await self.session.commit()
+            logger.error(f"Failed to add tabular document: {e}", exc_info=True)
+            raise
+
+    def _row_to_text(
+        self, row: pd.Series, columns: pd.Index, clean_data: bool = False
+    ) -> str:
+        """Convert a DataFrame row to text."""
+        parts = []
+        for col in columns:
+            val = row.get(col)
+            if pd.isna(val):
+                continue
+            if isinstance(val, float) and val.is_integer():
+                val = str(int(val))
+            else:
+                val = str(val)
+            if clean_data:
+                val = apply_cleaners(val, enabled=True)
+            if val:
+                parts.append(f"{col}: {val}")
+        return "\n".join(parts)
+
+    async def delete_document(
+        self,
+        document_id: uuid.UUID,
+        owner_id: uuid.UUID | None = None,
+    ) -> bool:
+        """Delete a document and its vectors."""
+        result = await self.session.execute(
+            select(Document)
+            .options(
+                selectinload(Document.chunks), selectinload(Document.knowledge_base)
+            )
+            .where(and_(Document.id == document_id, Document.status == "ACTIVE"))
+        )
+        document = result.scalar_one_or_none()
+
+        if not document:
+            return False
+
+        if owner_id and document.owner_id != owner_id:
+            return False
+
+        # Get KB to use its configured store type
+        kb = document.knowledge_base
+        if not kb:
+            kb_result = await self.session.execute(
+                select(KnowledgeBase).where(
+                    KnowledgeBase.id == document.knowledge_base_id
+                )
+            )
+            kb = kb_result.scalar_one_or_none()
+
+        store_type = kb.vector_store_type if kb else settings.VECTOR_STORE_TYPE
+
+        # Delete from vector store
+        chunk_ids = [str(c.id) for c in document.chunks]
+        if chunk_ids:
+            await self.index_manager.delete_nodes(
+                kb_id=document.knowledge_base_id,
+                node_ids=chunk_ids,
+                store_type=store_type,
+            )
+
+        document.status = "DELETED"
+        await self.session.commit()
+
+        logger.info(f"Deleted document {document_id} with {len(chunk_ids)} chunks")
+        return True
+
+    # =========================================================================
+    # Retrieval
+    # =========================================================================
+
+    async def relevance_search(
+        self,
+        query: str,
+        knowledge_base_id: uuid.UUID,
+        k: int = 5,
+        fetch_k: int | None = None,
+        score_threshold: float | None = None,
+        use_hybrid: bool | None = None,
+        use_rerank: bool | None = None,
+        query_transform: str | None = None,
+        rerank_top_k: int | None = None,
+        rerank_model_id: str | None = None,
+        **kwargs: Any,
+    ) -> list[RetrievalResult]:
+        """
+        Perform SOTA retrieval on a knowledge base.
+
+        Args:
+            query: Search query
+            knowledge_base_id: Target knowledge base
+            k: Number of results
+            fetch_k: Number to fetch before reranking
+            score_threshold: Minimum similarity score
+            use_hybrid: Enable hybrid search
+            use_rerank: Enable reranking
+            query_transform: Query transformation type
+            rerank_top_k: Reranker top-n
+            rerank_model_id: Specific reranker model name (e.g., 'BAAI/bge-reranker-v2-m3')
+
+        Returns:
+            List of retrieval results
+        """
+        logger.debug(f"Relevance search in KB {knowledge_base_id}: {query[:100]}...")
+
+        kb = await self.get_knowledge_base(knowledge_base_id)
         if not kb:
             raise ValueError("Knowledge base not found")
-        kb.reindex_required = False
-        await self.session.commit()
-        await self.session.refresh(kb)
-        return kb
 
-    async def delete_vector_collection(self, kb_id: uuid.UUID) -> None:
-        """Remove all vectors for a knowledge base from Chroma."""
-        collection_name = f"kb_{kb_id}"
-        await self.vector_store.delete_collection(collection_name)
+        if not kb.embedding_model_id:
+            raise ValueError("Knowledge base embedding model not configured")
+
+        # Apply defaults from settings
+        use_hybrid = (
+            use_hybrid if use_hybrid is not None else settings.RAG_ENABLE_HYBRID_SEARCH
+        )
+        use_rerank = (
+            use_rerank if use_rerank is not None else settings.RAG_ENABLE_RERANKING
+        )
+        query_transform = query_transform or settings.RAG_QUERY_TRANSFORM_TYPE
+        fetch_k = fetch_k or max(k * 3, k)
+
+        # Get embedding model
+        (
+            embed_model,
+            embed_info,
+        ) = await self.embedding_service.get_embed_model_with_info(
+            str(kb.embedding_model_id)
+        )
+        embed_dim = embed_info.get("embed_dim", 384)
+
+        # Get index
+        index = await self.index_manager.get_index(
+            kb_id=knowledge_base_id,
+            embed_model=embed_model,
+            store_type=kb.vector_store_type,
+            embed_dim=embed_dim,
+        )
+
+        # Transform query
+        # For LLM-based transforms (HyDE, step-back), we need to provide an LLM
+        llm = None
+        if query_transform in ["hyde", "step_back"]:
+            try:
+                from airbeeps.llm.service import get_default_llm
+
+                llm = await get_default_llm()
+            except Exception as e:
+                logger.warning(f"Failed to get LLM for query transformation: {e}")
+
+        transformer = get_query_transformer(transform_type=query_transform, llm=llm)
+        queries = await transformer.transform(query)
+
+        # Build retriever
+        storage_context = self.index_manager.get_storage_context(knowledge_base_id)
+
+        if use_hybrid and storage_context:
+            retriever = build_hybrid_retriever(
+                index=index,
+                top_k=fetch_k,
+                storage_context=storage_context,
+                use_auto_merge=settings.RAG_ENABLE_HIERARCHICAL,
+            )
+        else:
+            retriever = index.as_retriever(similarity_top_k=fetch_k)
+
+        # Retrieve for all query variants and merge
+        all_nodes: dict[str, NodeWithScore] = {}
+
+        for q in queries:
+            nodes = await retriever.aretrieve(q)
+            for node in nodes:
+                node_id = node.node.node_id
+                if node_id not in all_nodes or (node.score or 0) > (
+                    all_nodes[node_id].score or 0
+                ):
+                    all_nodes[node_id] = node
+
+        results_list = list(all_nodes.values())
+
+        # Apply reranking
+        if use_rerank and results_list:
+            from llama_index.core.schema import QueryBundle
+
+            query_bundle = QueryBundle(query_str=query)
+
+            # Check for ensemble reranking config in kwargs or KB retrieval_config
+            ensemble_config = kwargs.get("ensemble_rerankers")
+            if ensemble_config is None and kb.retrieval_config:
+                ensemble_config = kb.retrieval_config.get("ensemble_rerankers")
+
+            if ensemble_config and len(ensemble_config) > 1:
+                # Use ensemble reranking
+                from .reranker import get_ensemble_reranker
+
+                fusion_method = kwargs.get("rerank_fusion_method", "rrf")
+                if kb.retrieval_config:
+                    fusion_method = kb.retrieval_config.get(
+                        "rerank_fusion_method", fusion_method
+                    )
+
+                ensemble_reranker = get_ensemble_reranker(
+                    reranker_configs=ensemble_config,
+                    fusion_method=fusion_method,
+                    top_n=rerank_top_k or k,
+                )
+                if ensemble_reranker:
+                    results_list = ensemble_reranker.postprocess_nodes(
+                        results_list, query_bundle
+                    )
+            else:
+                # Single reranker - rerank_model_id should be treated as a model name string
+                reranker = get_reranker(
+                    top_n=rerank_top_k or k,
+                    model=rerank_model_id if rerank_model_id else None,
+                )
+                if reranker:
+                    results_list = reranker.postprocess_nodes(
+                        results_list, query_bundle
+                    )
+
+        # Apply score threshold
+        if score_threshold:
+            results_list = [
+                n for n in results_list if (n.score or 0) >= score_threshold
+            ]
+
+        # Limit to k results
+        results_list = results_list[:k]
+
+        # Convert to RetrievalResult
+        results = []
+        for node_with_score in results_list:
+            node = node_with_score.node
+            metadata = node.metadata or {}
+
+            results.append(
+                RetrievalResult(
+                    content=node.get_content(),
+                    score=node_with_score.score or 0.0,
+                    metadata=metadata,
+                    node_id=node.node_id,
+                    document_id=metadata.get("document_id"),
+                    chunk_id=metadata.get("chunk_id"),
+                    chunk_index=metadata.get("chunk_index"),
+                    title=metadata.get("title"),
+                )
+            )
+
+        logger.info(f"Retrieved {len(results)} results from KB {knowledge_base_id}")
+        return results
+
+    # =========================================================================
+    # Helper Methods
+    # =========================================================================
+
+    async def _get_document_by_hash(
+        self, knowledge_base_id: uuid.UUID, file_hash: str
+    ) -> Document | None:
+        """Get document by file hash."""
+        result = await self.session.execute(
+            select(Document).where(
+                and_(
+                    Document.knowledge_base_id == knowledge_base_id,
+                    Document.file_hash == file_hash,
+                    Document.status == "ACTIVE",
+                )
+            )
+        )
+        return result.scalar_one_or_none()
+
+    def _infer_file_type(
+        self, filename: str | None, file_path: str | None
+    ) -> str | None:
+        """Infer file type from filename or path."""
+        target = filename or file_path
+        if not target:
+            return None
+
+        from pathlib import Path
+
+        ext = Path(target).suffix.lower()
+
+        mapping = {
+            ".txt": "txt",
+            ".md": "md",
+            ".markdown": "md",
+            ".pdf": "pdf",
+            ".doc": "doc",
+            ".docx": "docx",
+            ".ppt": "ppt",
+            ".pptx": "pptx",
+            ".xls": "xls",
+            ".xlsx": "xlsx",
+            ".csv": "csv",
+            ".json": "json",
+            ".xml": "xml",
+            ".html": "html",
+            ".htm": "html",
+        }
+
+        return mapping.get(ext)
+
+    async def get_collection_stats(self, kb_id: uuid.UUID) -> dict[str, Any]:
+        """Get vector collection statistics for a KB."""
+        kb = await self.get_knowledge_base(kb_id)
+        if not kb:
+            return {"error": "Knowledge base not found"}
+
+        return await self.index_manager.get_collection_stats(
+            kb_id=kb_id,
+            store_type=kb.vector_store_type,
+        )
 
     async def reindex_knowledge_base(
         self,
         kb_id: uuid.UUID,
         owner_id: uuid.UUID | None = None,
-        clean_data: bool = False,
     ) -> dict[str, Any]:
-        """
-        Rebuild all chunks and vectors for a knowledge base using current
-        chunk_size/chunk_overlap and embedding model.
-        """
-        logger.info("Starting reindex for KB %s (owner=%s)", kb_id, owner_id)
+        """Reindex all documents in a knowledge base."""
+        logger.info(f"Starting reindex for KB {kb_id}")
 
         kb_query = (
             select(KnowledgeBase)
@@ -359,25 +1001,29 @@ class RAGService:
 
         result = await self.session.execute(kb_query)
         kb = result.scalar_one_or_none()
+
         if not kb or kb.status != "ACTIVE":
             raise ValueError("Knowledge base not found or inactive")
 
         if not kb.embedding_model_id:
-            raise ValueError("Knowledge base embedding model is not configured")
+            raise ValueError("Knowledge base embedding model not configured")
 
-        embedder = await self.embedding_service.get_embedder(str(kb.embedding_model_id))
-        model_info = await self.embedding_service._get_model_by_id(
+        # Delete existing collection
+        await self.index_manager.delete_collection(kb_id, kb.vector_store_type)
+
+        # Get embedding model
+        (
+            embed_model,
+            embed_info,
+        ) = await self.embedding_service.get_embed_model_with_info(
             str(kb.embedding_model_id)
         )
-        embedding_meta = {
-            "embedding_model_id": str(kb.embedding_model_id),
-            "embedding_model_name": getattr(model_info, "name", None),
-            "embedding_model_display_name": getattr(model_info, "display_name", None),
-        }
+        embed_dim = embed_info.get("embed_dim", 384)
 
-        total_chunks = 0
+        doc_processor = await self._get_doc_processor(str(kb.embedding_model_id))
+
         total_docs = 0
-        collection_name = f"kb_{kb_id}"
+        total_chunks = 0
 
         for document in kb.documents:
             if document.status != "ACTIVE":
@@ -385,1229 +1031,59 @@ class RAGService:
 
             total_docs += 1
 
-            # Delete existing vectors for this document
-            chunk_ids = [str(chunk.id) for chunk in document.chunks]
-            if chunk_ids:
-                await self.vector_store.delete_documents(collection_name, chunk_ids)
-            # Remove chunk records
+            # Clear old chunks
             for chunk in list(document.chunks):
-                self.session.delete(chunk)
+                await self.session.delete(chunk)
 
-            # Rebuild chunks
-            chunk_records: list[DocumentChunk] = []
-            vector_documents: list[VectorDocument] = []
-
-            if document.file_path and document.file_type in {"xls", "xlsx", "csv"}:
-                (
-                    chunk_records,
-                    vector_documents,
-                ) = await self._rebuild_excel_document_chunks(
-                    document=document,
-                    kb=kb,
-                    embedder_meta=embedding_meta,
-                    clean_data=clean_data,
-                )
-            else:
-                (
-                    chunk_records,
-                    vector_documents,
-                ) = await self._rebuild_generic_document_chunks(
-                    document=document,
-                    kb=kb,
-                    embedder_meta=embedding_meta,
-                )
-
-            # Persist new chunks
-            for chunk_record in chunk_records:
-                self.session.add(chunk_record)
-            await self.session.flush()
-
-            # Refresh vector documents with assigned chunk IDs
-            updated_vectors: list[VectorDocument] = []
-            for i in range(len(chunk_records)):
-                new_meta = dict(vector_documents[i].metadata)
-                new_meta["chunk_id"] = str(chunk_records[i].id)
-                updated_vectors.append(
-                    VectorDocument(
-                        id=str(chunk_records[i].id),
-                        page_content=chunk_records[i].content,
-                        metadata=new_meta,
-                    )
-                )
-
-            try:
-                engine = self._get_engine_for_kb(kb)
-                await engine.index_documents(
-                    collection_name=collection_name,
-                    documents=updated_vectors,
-                    embedding_function=embedder,
-                )
-                document.status = "ACTIVE"
-                await self.session.commit()
-            except Exception as exc:
-                chunk_ids = [str(c.id) for c in chunk_records]
-                await self._cleanup_vectors(collection_name, chunk_ids)
-                await self.session.rollback()
-                try:
-                    kb_ref = await self.get_knowledge_base(kb_id)
-                    if kb_ref:
-                        kb_ref.reindex_required = True
-                        await self.session.commit()
-                except Exception as flag_exc:
-                    logger.warning(
-                        "Failed to persist reindex_required flag after reindex failure: %s",
-                        flag_exc,
-                    )
-                logger.error(
-                    "Reindex failed for document %s in KB %s: %s",
-                    document.id,
-                    kb_id,
-                    exc,
-                    exc_info=True,
-                )
-                kb.reindex_required = True
-                raise
-
-            total_chunks += len(chunk_records)
-
-        kb.reindex_required = False
-        await self.session.commit()
-        logger.info(
-            "Reindex complete for KB %s: docs=%s chunks=%s",
-            kb_id,
-            total_docs,
-            total_chunks,
-        )
-        return {
-            "knowledge_base_id": str(kb_id),
-            "documents_reindexed": total_docs,
-            "chunks_indexed": total_chunks,
-        }
-
-    async def _rebuild_generic_document_chunks(
-        self,
-        document: Document,
-        kb: KnowledgeBase,
-        embedder_meta: dict[str, Any],
-    ) -> tuple[list[DocumentChunk], list[VectorDocument]]:
-        """Rebuild chunks/vector docs for non-Excel documents from stored content."""
-        base_metadata = {
-            "document_id": str(document.id),
-            "title": document.title,
-            "file_path": document.file_path,
-            "file_type": document.file_type,
-            "source_url": document.source_url,
-            "status": "ACTIVE",
-            **(document.doc_metadata or {}),
-            **embedder_meta,
-        }
-
-        chunks = self.chunker.chunk_document(
-            document.content,
-            chunk_size=kb.chunk_size,
-            chunk_overlap=kb.chunk_overlap,
-            max_tokens_per_chunk=kb.chunk_size,
-            metadata=base_metadata,
-        )
-
-        chunk_records: list[DocumentChunk] = []
-        vector_documents: list[VectorDocument] = []
-        for i, chunk in enumerate(chunks):
-            chunk_record = DocumentChunk(
-                content=chunk.content,
-                chunk_index=i,
-                token_count=chunk.token_count,
-                document_id=document.id,
-                chunk_metadata=chunk.metadata,
-            )
-            chunk_records.append(chunk_record)
-            vector_documents.append(
-                VectorDocument(
-                    id="pending",
-                    page_content=chunk.content,
-                    metadata={
-                        "chunk_id": "pending",
-                        "document_id": str(document.id),
-                        "chunk_index": i,
-                        "knowledge_base_id": str(kb.id),
-                        "title": document.title,
-                        **chunk.metadata,
-                    },
-                )
-            )
-
-        return chunk_records, vector_documents
-
-    async def _rebuild_excel_document_chunks(
-        self,
-        document: Document,
-        kb: KnowledgeBase,
-        embedder_meta: dict[str, Any],
-        clean_data: bool = False,
-    ) -> tuple[list[DocumentChunk], list[VectorDocument]]:
-        """Rebuild chunks/vector docs for Excel/CSV documents from storage."""
-        if not document.file_path:
-            raise ValueError("Excel/CSV document missing file_path for reindex")
-
-        file_bytes, _ = await self.content_extractor._download_file_from_storage(
-            document.file_path
-        )
-        if isinstance(file_bytes, BytesIO):
-            file_bytes.seek(0)
-        else:
-            file_bytes = BytesIO(file_bytes)
-
-        sheets = pd.read_excel(file_bytes, sheet_name=None)
-        if not sheets:
-            raise ValueError("No sheets found in Excel/CSV file during reindex")
-
-        sheet_name = next(iter(sheets.keys()))
-        df = sheets[sheet_name].dropna(axis=1, how="all")
-
-        def _clean_value(val: Any) -> str | None:
-            if pd.isna(val):
-                return None
-            if isinstance(val, float) and val.is_integer():
-                val = str(int(val))
-            else:
-                val = str(val)
-            cleaned = apply_cleaners(val, enabled=clean_data)
-            return cleaned if cleaned else None
-
-        def _build_row_text(row: pd.Series) -> str:
-            parts: list[str] = []
-            for col in df.columns:
-                val = _clean_value(row.get(col))
-                if val is None or val == "":
-                    continue
-                parts.append(f"{col}: {val}")
-            return "\n".join(parts)
-
-        chunk_records: list[DocumentChunk] = []
-        vector_documents: list[VectorDocument] = []
-
-        for idx, row in df.iterrows():
-            row_text = apply_cleaners(_build_row_text(row), enabled=clean_data)
-            if not row_text.strip():
-                continue
-
-            row_number = int(idx) + 2
-            chunk_meta: dict[str, Any] = {
-                "sheet": sheet_name,
-                "row_number": row_number,
-                "file_path": document.file_path,
-                "file_type": document.file_type,
-                "display_name": document.title,
-                "source_type": "file",
-                "original_filename": document.doc_metadata.get("original_filename")
-                if document.doc_metadata
-                else None,
-                "document_id": str(document.id),
-                "title": document.title,
-                "status": "ACTIVE",
-                **embedder_meta,
-                **(document.doc_metadata or {}),
-            }
-
-            chunk_content = row_text
-            if self.chunker._count_tokens(chunk_content) > kb.chunk_size:
-                chunk_content = self.chunker._truncate_to_token_limit(
-                    chunk_content, kb.chunk_size
-                )
-
-            chunk_record = DocumentChunk(
-                content=chunk_content,
-                chunk_index=len(chunk_records),
-                token_count=self.chunker._count_tokens(chunk_content),
-                document_id=document.id,
-                chunk_metadata=chunk_meta,
-            )
-            chunk_records.append(chunk_record)
-            vector_documents.append(
-                VectorDocument(
-                    id="pending",
-                    page_content=chunk_content,
-                    metadata={
-                        "chunk_id": "pending",
-                        "document_id": str(document.id),
-                        "chunk_index": chunk_record.chunk_index,
-                        "knowledge_base_id": str(kb.id),
-                        **chunk_meta,
-                    },
-                )
-            )
-
-        if not chunk_records:
-            raise ValueError("No usable rows found in Excel/CSV file during reindex")
-
-        return chunk_records, vector_documents
-
-    async def add_document_from_file(
-        self,
-        file_path: str,
-        knowledge_base_id: uuid.UUID,
-        owner_id: uuid.UUID,
-        filename: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        dedup_strategy: str = "replace",
-        clean_data: bool = False,
-    ) -> tuple[Document, str, uuid.UUID | None]:
-        """Add document to knowledge base from file path with dedup handling."""
-        logger.info(
-            f"Adding document from file '{filename or file_path}' to KB {knowledge_base_id}, dedup_strategy={dedup_strategy}"
-        )
-        try:
-            dedup_status = "created"
-            replaced_document_id: uuid.UUID | None = None
-
-            if dedup_strategy not in {"replace", "skip", "version"}:
-                logger.warning(
-                    f"Invalid dedup_strategy '{dedup_strategy}', defaulting to 'replace'"
-                )
-                dedup_strategy = "replace"
-
-            # Verify knowledge base exists and belongs to user
-            kb = await self.get_knowledge_base(knowledge_base_id, owner_id)
-            if not kb:
-                logger.error(
-                    f"Knowledge base {knowledge_base_id} not found or access denied for owner {owner_id}"
-                )
-                raise ValueError("Knowledge base not found or access denied")
-
-            # Find corresponding file record from database to get original filename as title
-            file_record = await self.file_service.get_file_by_path(file_path)
-            if file_record:
-                title = file_record.filename
-                original_filename = file_record.filename
-                file_hash = file_record.file_hash
-                logger.debug(
-                    f"Found file record: {original_filename}, hash={file_hash}"
-                )
-            else:
-                # If file record not found, use passed filename or extract from path
-                title = filename or file_path.split("/")[-1]
-                original_filename = filename
-                file_hash = None
-                logger.debug(f"No file record found, using filename: {title}")
-
-            # Deduplicate by file hash (identical content)
-            existing_doc = None
-            if file_hash:
-                existing_doc = await self._get_active_document_by_hash(
-                    knowledge_base_id=knowledge_base_id,
-                    file_hash=file_hash,
-                )
-                if existing_doc and dedup_strategy == "skip":
-                    logger.info(
-                        f"Skipping ingest for {file_path} (duplicate hash={file_hash}) in KB {knowledge_base_id}"
-                    )
-                    return existing_doc, "skipped", None
-                if existing_doc and dedup_strategy == "replace":
-                    replaced_document_id = existing_doc.id
-                    logger.info(
-                        f"Replacing existing document {existing_doc.id} with same hash"
-                    )
-                    await self.delete_document(existing_doc.id, owner_id)
-                    dedup_status = "replaced"
-                if existing_doc and dedup_strategy == "version":
-                    dedup_status = "versioned"
-                    title = await self._next_versioned_title(title, knowledge_base_id)
-                    logger.debug(f"Creating versioned document with title: {title}")
-
-            # If content differs but filename matches, follow strategy
-            if not existing_doc:
-                same_title_doc = await self._get_active_document_by_title(
-                    knowledge_base_id=knowledge_base_id,
-                    title=title,
-                )
-                if same_title_doc and dedup_strategy == "replace":
-                    replaced_document_id = same_title_doc.id
-                    logger.info(
-                        f"Replacing existing document {same_title_doc.id} with same title"
-                    )
-                    await self.delete_document(same_title_doc.id, owner_id)
-                    dedup_status = "replaced"
-                elif same_title_doc and dedup_strategy == "version":
-                    dedup_status = "versioned"
-                    title = await self._next_versioned_title(title, knowledge_base_id)
-                    logger.debug(f"Creating versioned document with title: {title}")
-
-            # Infer file type
-            file_type = self._infer_file_type(original_filename, file_path)
-            logger.debug(f"Inferred file type: {file_type}")
-
-            # For Excel/CSV sources, ingest row-wise for better citations
-            if file_type in {"xls", "xlsx", "csv"}:
-                logger.info(f"Processing Excel/CSV file: {title}")
-                document = await self._add_excel_document(
-                    file_path=file_path,
-                    original_filename=original_filename or title,
-                    title=title,
-                    knowledge_base_id=knowledge_base_id,
-                    owner_id=owner_id,
-                    metadata=metadata or {},
-                    file_type=file_type,
-                    file_hash=file_hash,
-                    clean_data=clean_data,
-                )
-                logger.info(
-                    f"Added Excel/CSV document '{title}' from file '{file_path}' to knowledge base {knowledge_base_id}"
-                )
-                return document, dedup_status, replaced_document_id
-
-            # Extract content from file path using content extractor (default path)
-            logger.debug(f"Extracting content from file: {file_path}")
-            _, content = await self.content_extractor.extract_from_file_path(
-                file_path, original_filename
-            )
-            logger.debug(f"Extracted {len(content)} characters from file")
-
-            # Merge metadata
-            combined_metadata = {
-                "source_type": "file",
-                "original_filename": original_filename,
-                **(metadata or {}),
-            }
-
-            # Call existing add document method
-            document = await self.add_document(
-                title=title,
-                content=content,
-                knowledge_base_id=knowledge_base_id,
-                owner_id=owner_id,
-                file_path=file_path,
-                file_type=file_type,
-                metadata=combined_metadata,
-                status="ACTIVE",  # ensure visible in listings
-                file_hash=file_hash,
-            )
-
-            logger.info(
-                f"Added document '{title}' (ID: {document.id}) from file '{file_path}' to knowledge base {knowledge_base_id}"
-            )
-            return document, dedup_status, replaced_document_id
-
-        except Exception as e:
-            logger.error(
-                f"Failed to add document from file {file_path} to KB {knowledge_base_id}: {e}",
-                exc_info=True,
-            )
-            raise
-
-    async def _get_active_document_by_hash(
-        self, knowledge_base_id: uuid.UUID, file_hash: str
-    ) -> Document | None:
-        """Fetch an active document in a KB by file hash."""
-        result = await self.session.execute(
-            select(Document).where(
-                and_(
-                    Document.knowledge_base_id == knowledge_base_id,
-                    Document.file_hash == file_hash,
-                    Document.status == "ACTIVE",
-                )
-            )
-        )
-        return result.scalar_one_or_none()
-
-    async def _get_active_document_by_title(
-        self, knowledge_base_id: uuid.UUID, title: str
-    ) -> Document | None:
-        """Fetch an active document in a KB by exact title."""
-        result = await self.session.execute(
-            select(Document).where(
-                and_(
-                    Document.knowledge_base_id == knowledge_base_id,
-                    Document.title == title,
-                    Document.status == "ACTIVE",
-                )
-            )
-        )
-        return result.scalar_one_or_none()
-
-    async def _next_versioned_title(
-        self, base_title: str, knowledge_base_id: uuid.UUID
-    ) -> str:
-        """
-        Build the next versioned title by appending (vN).
-        """
-        result = await self.session.execute(
-            select(Document.title).where(
-                and_(
-                    Document.knowledge_base_id == knowledge_base_id,
-                    Document.status == "ACTIVE",
-                )
-            )
-        )
-        existing_titles = set(result.scalars().all())
-
-        # If base already has a version suffix, strip it for counting
-        version = 2
-        while True:
-            candidate = f"{base_title} (v{version})"
-            if candidate not in existing_titles:
-                return candidate
-            version += 1
-
-    async def add_document(
-        self,
-        title: str,
-        content: str,
-        knowledge_base_id: uuid.UUID,
-        owner_id: uuid.UUID,
-        source_url: str | None = None,
-        file_path: str | None = None,
-        file_type: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        status: str = "ACTIVE",
-        file_hash: str | None = None,
-    ) -> Document:
-        """Add document to knowledge base"""
-        logger.info(f"Adding document '{title}' to KB {knowledge_base_id}")
-        logger.debug(
-            f"Document: file_type={file_type}, content_length={len(content)}, file_hash={file_hash}"
-        )
-        try:
-            # Verify knowledge base exists and belongs to user
-            kb = await self.get_knowledge_base(knowledge_base_id, owner_id)
-            if not kb:
-                logger.error(
-                    f"Knowledge base {knowledge_base_id} not found or access denied for owner {owner_id}"
-                )
-                raise ValueError("Knowledge base not found or access denied")
-
-            # If file_type not provided, try to infer from file path
-            if not file_type and (file_path or source_url):
-                file_type = self._infer_file_type(None, file_path or source_url)
-                logger.debug(f"Inferred file type: {file_type}")
-
-            # Create document record
-            document = Document(
-                title=title,
-                content=content,
-                knowledge_base_id=knowledge_base_id,
-                owner_id=owner_id,
-                source_url=source_url,
-                file_path=file_path,
-                file_type=file_type,
-                doc_metadata=metadata or {},
-                status="INDEXING",
-                file_hash=file_hash,
-            )
-
-            self.session.add(document)
-            await self.session.commit()
-            await self.session.refresh(document)
-            logger.debug(f"Created document record with ID: {document.id}")
-
-            # Prevent ingest if KB needs reindex
-            if getattr(kb, "reindex_required", False):
-                raise ValueError(
-                    "Knowledge base embedding model changed; reindex required before ingest"
-                )
-
-            # Chunk document
-            model_info = await self.embedding_service._get_model_by_id(
-                str(kb.embedding_model_id)
-            )
-            embedding_meta = {
-                "embedding_model_id": str(kb.embedding_model_id),
-                "embedding_model_name": getattr(model_info, "name", None),
-                "embedding_model_display_name": getattr(
-                    model_info, "display_name", None
-                ),
-            }
-            chunks = self.chunker.chunk_document(
-                content,
-                chunk_size=kb.chunk_size,
-                chunk_overlap=kb.chunk_overlap,
-                max_tokens_per_chunk=kb.chunk_size,
+            # Reprocess document
+            nodes = doc_processor.process_text(
+                content=document.content,
                 metadata={
                     "document_id": str(document.id),
-                    "title": title,
-                    "file_path": file_path,
-                    "file_type": file_type,
-                    "source_url": source_url,
-                    "status": status,
-                    **embedding_meta,
-                    **(metadata or {}),
+                    "knowledge_base_id": str(kb_id),
+                    "title": document.title,
+                    **embed_info,
                 },
             )
 
-            logger.info(
-                f"Split document into {len(chunks)} chunks (chunk_size={kb.chunk_size}, overlap={kb.chunk_overlap})"
-            )
-
-            if not kb.embedding_model_id:
-                logger.error(
-                    f"Knowledge base {knowledge_base_id} has no embedding model configured"
-                )
-                raise ValueError("Knowledge base embedding model is not configured")
-
-            logger.debug(f"Getting embedder for model: {kb.embedding_model_id}")
-            embedder = await self.embedding_service.get_embedder(
-                model_id=str(kb.embedding_model_id)
-            )
-
-            chunk_records: list[DocumentChunk] = []
-            vector_documents: list[VectorDocument] = []
-
-            collection_name = f"kb_{knowledge_base_id}"
-            try:
-                # Save document chunks to database
-                for i, chunk in enumerate(chunks):
-                    chunk_record = DocumentChunk(
-                        content=chunk.content,
-                        chunk_index=i,
-                        token_count=chunk.token_count,
-                        document_id=document.id,
-                        chunk_metadata=chunk.metadata,
-                    )
-                    chunk_records.append(chunk_record)
-                    self.session.add(chunk_record)
-
-                await self.session.flush()
-                logger.debug(f"Saved {len(chunk_records)} chunk records to database")
-
-                for chunk_record in chunk_records:
-                    vector_documents.append(
-                        VectorDocument(
-                            id=str(chunk_record.id),
-                            page_content=chunk_record.content,
-                            metadata={
-                                "chunk_id": str(chunk_record.id),
-                                "document_id": str(document.id),
-                                "chunk_index": chunk_record.chunk_index,
-                                "knowledge_base_id": str(knowledge_base_id),
-                                "title": title,
-                                **chunk_record.chunk_metadata,
-                            },
-                        )
-                    )
-
-                logger.debug(
-                    f"Adding {len(vector_documents)} documents to vector store collection: {collection_name}"
-                )
-                engine = self._get_engine_for_kb(kb)
-                await engine.index_documents(
-                    collection_name=collection_name,
-                    documents=vector_documents,
-                    embedding_function=embedder,
-                )
-                # Mark indexing success
-                document.status = "ACTIVE"
-                await self.session.commit()
-                logger.info(
-                    f"Successfully added document '{title}' (ID: {document.id}) with {len(chunks)} chunks to KB {knowledge_base_id}"
-                )
-                return document
-            except Exception as e:
-                await self.session.rollback()
-                chunk_ids = [doc.id for doc in vector_documents]
-                await self._cleanup_vectors(collection_name, chunk_ids)
-                try:
-                    doc_ref = await self.session.get(Document, document.id)
-                    if doc_ref:
-                        doc_ref.status = "FAILED"
-                        await self.session.commit()
-                except Exception as status_exc:
-                    logger.warning(
-                        "Failed to persist FAILED status for document %s: %s",
-                        document.id,
-                        status_exc,
-                    )
-                logger.error(
-                    f"Failed to add document '{title}' to KB {knowledge_base_id}: {e}",
-                    exc_info=True,
-                )
-                raise
-
-        except Exception as e:
-            await self.session.rollback()
-            logger.error(
-                f"Failed to add document '{title}' to KB {knowledge_base_id}: {e}",
-                exc_info=True,
-            )
-            raise
-
-    async def _add_excel_document(
-        self,
-        file_path: str,
-        original_filename: str,
-        title: str,
-        knowledge_base_id: uuid.UUID,
-        owner_id: uuid.UUID,
-        metadata: dict[str, Any],
-        file_type: str,
-        file_hash: str | None,
-        clean_data: bool = False,
-        profile_id: uuid.UUID | None = None,
-    ) -> Document:
-        """Ingest an Excel/CSV file row-wise to preserve per-row citations.
-
-        Uses TabularProfileEngine for profile-driven metadata extraction
-        and row text rendering if a profile is specified or a KB default exists.
-        """
-        logger.info(
-            f"Ingesting Excel/CSV file '{title}' row-wise for KB {knowledge_base_id}"
-        )
-
-        # Verify knowledge base exists and belongs to user
-        kb = await self.get_knowledge_base(knowledge_base_id, owner_id)
-        if not kb:
-            logger.error(
-                f"Knowledge base {knowledge_base_id} not found or access denied"
-            )
-            raise ValueError("Knowledge base not found or access denied")
-        if getattr(kb, "reindex_required", False):
-            raise ValueError(
-                "Knowledge base embedding model changed; reindex required before ingest"
-            )
-        if not kb.embedding_model_id:
-            logger.error(
-                f"Knowledge base {knowledge_base_id} has no embedding model configured"
-            )
-            raise ValueError("Knowledge base embedding model is not configured")
-
-        # Load profile configuration
-        from .models import IngestionProfile
-        from .tabular_profile import get_profile_engine
-
-        profile_config = None
-        if profile_id:
-            # Use specified profile
-            profile = await self.session.get(IngestionProfile, profile_id)
-            if profile and profile.status == "ACTIVE":
-                profile_config = profile.config
-                logger.debug(f"Using specified profile: {profile.name}")
-
-        if not profile_config:
-            # Try to find KB default profile
-            result = await self.session.execute(
-                select(IngestionProfile).where(
-                    and_(
-                        IngestionProfile.knowledge_base_id == knowledge_base_id,
-                        IngestionProfile.is_default,
-                        IngestionProfile.status == "ACTIVE",
-                    )
-                )
-            )
-            default_profile = result.scalar_one_or_none()
-            if default_profile:
-                profile_config = default_profile.config
-                logger.debug(f"Using KB default profile: {default_profile.name}")
-
-        if not profile_config:
-            # Fall back to global builtin default profile (if any)
-            result = await self.session.execute(
-                select(IngestionProfile).where(
-                    and_(
-                        IngestionProfile.knowledge_base_id.is_(None),
-                        IngestionProfile.is_builtin,
-                        IngestionProfile.is_default,
-                        IngestionProfile.status == "ACTIVE",
-                    )
-                )
-            )
-            builtin_defaults = result.scalars().all()
-            for p in builtin_defaults:
-                if not p.file_types or file_type in (p.file_types or []):
-                    profile_config = p.config
-                    logger.debug(f"Using builtin default profile: {p.name}")
-                    break
-
-        # Initialize profile engine (uses default profile if config is None)
-        profile_engine = get_profile_engine(profile_config)
-
-        # Download the file bytes from storage
-        logger.debug(f"Downloading file from storage: {file_path}")
-        file_bytes, _ = await self.content_extractor._download_file_from_storage(
-            file_path
-        )
-        if isinstance(file_bytes, BytesIO):
-            file_bytes.seek(0)
-        else:
-            file_bytes = BytesIO(file_bytes)
-
-        # Read all sheets; use the first by default
-        logger.debug("Reading Excel sheets")
-        if file_type == "csv":
-            file_bytes.seek(0)
-            df = pd.read_csv(file_bytes)
-            sheet_name = "Sheet1"
-        else:
-            sheets = pd.read_excel(file_bytes, sheet_name=None)
-            if not sheets:
-                logger.error(f"No sheets found in Excel file {file_path}")
-                raise ValueError("No sheets found in Excel file")
-            # Prefer first sheet
-            sheet_name = next(iter(sheets.keys()))
-            df = sheets[sheet_name]
-
-        logger.debug(
-            f"Using sheet '{sheet_name}' with {len(df)} rows, {len(df.columns)} columns"
-        )
-
-        # Drop completely empty columns
-        df = df.dropna(axis=1, how="all")
-        logger.debug(f"After dropping empty columns: {len(df.columns)} columns")
-
-        # Process dataframe using profile engine
-        row_chunks = profile_engine.process_dataframe(
-            df=df,
-            sheet_name=sheet_name,
-            file_path=file_path,
-            file_type=file_type,
-            original_filename=original_filename,
-            title=title,
-            clean_data=clean_data,
-        )
-
-        if not row_chunks:
-            logger.error(f"No usable rows found in Excel/CSV file {file_path}")
-            raise ValueError("No usable rows found in Excel/CSV file")
-
-        logger.info(f"Extracted {len(row_chunks)} usable rows from Excel file")
-
-        # Create a document record to own the chunks
-        document = Document(
-            title=title,
-            content=f"Excel source: {title}",
-            knowledge_base_id=knowledge_base_id,
-            owner_id=owner_id,
-            file_path=file_path,
-            file_type=file_type,
-            doc_metadata=metadata or {},
-            status="INDEXING",  # transition to ACTIVE after vector write
-            file_hash=file_hash,
-        )
-        self.session.add(document)
-        await self.session.commit()
-        await self.session.refresh(document)
-        logger.debug(f"Created document record with ID: {document.id}")
-
-        logger.debug(f"Getting embedder for model: {kb.embedding_model_id}")
-        embedder = await self.embedding_service.get_embedder(
-            model_id=str(kb.embedding_model_id)
-        )
-        model_info = await self.embedding_service._get_model_by_id(
-            str(kb.embedding_model_id)
-        )
-        embedding_meta = {
-            "embedding_model_id": str(kb.embedding_model_id),
-            "embedding_model_name": getattr(model_info, "name", None),
-            "embedding_model_display_name": getattr(model_info, "display_name", None),
-        }
-
-        chunk_records: list[DocumentChunk] = []
-        vector_documents: list[VectorDocument] = []
-        collection_name = f"kb_{knowledge_base_id}"
-
-        try:
-            for i, row_chunk in enumerate(row_chunks):
-                chunk_content = row_chunk["content"]
-                max_tokens = kb.chunk_size
-                if self.chunker._count_tokens(chunk_content) > max_tokens:
-                    chunk_content = self.chunker._truncate_to_token_limit(
-                        chunk_content, max_tokens
-                    )
-                chunk_meta = {
-                    **row_chunk["metadata"],
-                    "document_id": str(document.id),
-                    "title": title,
-                    "status": "ACTIVE",
-                    **embedding_meta,
-                }
+            # Create new chunk records
+            chunk_records = []
+            for i, node in enumerate(nodes):
                 chunk_record = DocumentChunk(
-                    content=chunk_content,
+                    content=node.get_content(),
                     chunk_index=i,
-                    token_count=self.chunker._count_tokens(chunk_content),
+                    token_count=len(node.get_content().split()),
                     document_id=document.id,
-                    chunk_metadata=chunk_meta,
+                    chunk_metadata={"node_id": node.node_id, **node.metadata},
                 )
                 chunk_records.append(chunk_record)
                 self.session.add(chunk_record)
 
             await self.session.flush()
-            logger.debug(f"Saved {len(chunk_records)} row chunks to database")
 
-            for chunk_record in chunk_records:
-                vector_documents.append(
-                    VectorDocument(
-                        id=str(chunk_record.id),
-                        page_content=chunk_record.content,
-                        metadata={
-                            "chunk_id": str(chunk_record.id),
-                            "document_id": str(document.id),
-                            "chunk_index": chunk_record.chunk_index,
-                            "knowledge_base_id": str(knowledge_base_id),
-                            **chunk_record.chunk_metadata,
-                        },
-                    )
-                )
+            # Update node IDs
+            for chunk_record, node in zip(chunk_records, nodes, strict=False):
+                node.node_id = str(chunk_record.id)
+                node.metadata["chunk_id"] = str(chunk_record.id)
 
-            logger.debug(f"Adding {len(vector_documents)} row chunks to vector store")
-            engine = self._get_engine_for_kb(kb)
-            await engine.index_documents(
-                collection_name=collection_name,
-                documents=vector_documents,
-                embedding_function=embedder,
-            )
-            document.status = "ACTIVE"
-            await self.session.commit()
-            logger.info(
-                f"Added {len(row_chunks)} row chunks from Excel '{title}' into knowledge base {knowledge_base_id}"
-            )
-            return document
-        except Exception as e:
-            await self.session.rollback()
-            chunk_ids = [doc.id for doc in vector_documents]
-            await self._cleanup_vectors(collection_name, chunk_ids)
-            try:
-                doc_ref = await self.session.get(Document, document.id)
-                if doc_ref:
-                    doc_ref.status = "FAILED"
-                    await self.session.commit()
-            except Exception as status_exc:
-                logger.warning(
-                    "Failed to persist FAILED status for Excel/CSV document %s: %s",
-                    document.id,
-                    status_exc,
-                )
-            logger.error(
-                "Failed to add Excel/CSV document '%s' to KB %s: %s",
-                title,
-                knowledge_base_id,
-                e,
-                exc_info=True,
-            )
-            raise
-
-    async def get_documents(
-        self,
-        knowledge_base_id: uuid.UUID,
-        owner_id: uuid.UUID,
-        skip: int = 0,
-        limit: int = 100,
-    ) -> list[Document]:
-        """Get document list in knowledge base"""
-        # Verify knowledge base access permission
-        kb = await self.get_knowledge_base(knowledge_base_id, owner_id)
-        if not kb:
-            raise ValueError("Knowledge base not found or access denied")
-
-        result = await self.session.execute(
-            select(Document)
-            .where(
-                and_(
-                    Document.knowledge_base_id == knowledge_base_id,
-                    Document.status == "ACTIVE",
-                )
-            )
-            .offset(skip)
-            .limit(limit)
-            .order_by(Document.created_at.desc())
-        )
-        return result.scalars().all()
-
-    async def get_document_chunks(
-        self,
-        document_id: uuid.UUID,
-        owner_id: uuid.UUID | None = None,
-        skip: int = 0,
-        limit: int = 100,
-    ) -> list[DocumentChunk]:
-        """Get document chunk list"""
-        logger.debug(
-            f"Retrieving chunks for document {document_id}, owner_id={owner_id}"
-        )
-        try:
-            # Get document info first, verify permission
-            query = select(Document).where(Document.id == document_id)
-            if owner_id is not None:
-                query = query.where(
-                    and_(Document.owner_id == owner_id, Document.status == "ACTIVE")
-                )
-            else:
-                query = query.where(Document.status == "ACTIVE")
-
-            document_result = await self.session.execute(query)
-            document = document_result.scalar_one_or_none()
-
-            if not document:
-                logger.warning(f"Document {document_id} not found or access denied")
-                raise ValueError("Document not found or access denied")
-
-            # Query document chunks
-            chunk_result = await self.session.execute(
-                select(DocumentChunk)
-                .where(DocumentChunk.document_id == document_id)
-                .offset(skip)
-                .limit(limit)
-                .order_by(DocumentChunk.chunk_index.asc())
-            )
-            chunks = chunk_result.scalars().all()
-            logger.debug(f"Retrieved {len(chunks)} chunks for document {document_id}")
-            return chunks
-
-        except Exception as e:
-            logger.error(
-                f"Failed to get document chunks for {document_id}: {e}", exc_info=True
-            )
-            raise
-
-    async def delete_document(
-        self, document_id: uuid.UUID, owner_id: uuid.UUID | None = None
-    ) -> bool:
-        """Delete document"""
-        logger.info(f"Deleting document {document_id}, owner_id={owner_id}")
-        try:
-            # Get document
-            result = await self.session.execute(
-                select(Document)
-                .options(selectinload(Document.chunks))
-                .where(and_(Document.id == document_id, Document.status == "ACTIVE"))
-            )
-            document = result.scalar_one_or_none()
-
-            if not document:
-                logger.warning(f"Document {document_id} not found for deletion")
-                return False
-
-            # If owner_id is provided, enforce ownership
-            if owner_id is not None and document.owner_id != owner_id:
-                logger.warning(
-                    f"Document {document_id} deletion denied - owner mismatch"
-                )
-                return False
-
-            # Delete from vector database
-            collection_name = f"kb_{document.knowledge_base_id}"
-            chunk_ids = [str(chunk.id) for chunk in document.chunks]
-
-            if chunk_ids:
-                logger.debug(
-                    f"Deleting {len(chunk_ids)} chunks from vector store collection {collection_name}"
-                )
-                await self.vector_store.delete_documents(collection_name, chunk_ids)
-
-            # Mark as deleted (soft delete)
-            document.status = "DELETED"
-
-            await self.session.commit()
-            logger.info(
-                f"Successfully deleted document {document_id} with {len(chunk_ids)} chunks"
-            )
-            return True
-
-        except Exception as e:
-            await self.session.rollback()
-            logger.error(f"Failed to delete document {document_id}: {e}", exc_info=True)
-            raise
-
-    async def relevance_search(
-        self,
-        query: str,
-        knowledge_base_id: uuid.UUID,
-        k: int = 5,
-        fetch_k: int | None = None,
-        score_threshold: float | None = None,
-        search_type: str = "similarity",
-        filters: dict[str, Any] | None = None,
-        mmr_lambda: float = 0.5,
-        multi_query: bool = False,
-        multi_query_count: int = 3,
-        rerank_top_k: int | None = None,
-        rerank_model_id: uuid.UUID | None = None,
-        hybrid_enabled: bool = False,
-        hybrid_corpus_limit: int = 1000,
-    ) -> list[VectorDocument]:
-        """RAG query with score/threshold support."""
-        logger.debug(f"Query: {query[:100]}...")  # Log first 100 chars
-        try:
-            kb = await self.get_knowledge_base(knowledge_base_id)
-            if not kb:
-                logger.error(
-                    f"Knowledge base {knowledge_base_id} not found for relevance search"
-                )
-                raise ValueError("Knowledge base not found or access denied")
-            if getattr(kb, "reindex_required", False):
-                logger.error(
-                    "Knowledge base %s requires reindex before retrieval",
-                    knowledge_base_id,
-                )
-                raise ValueError("Knowledge base needs reindexing for retrieval")
-
-            effective_fetch_k = fetch_k or max(k * 3, k)
-            logger.info(
-                "Performing relevance search in KB %s, k=%s, fetch_k=%s, threshold=%s, search_type=%s",
-                knowledge_base_id,
-                k,
-                effective_fetch_k,
-                score_threshold,
-                search_type,
+            # Index
+            await self.index_manager.add_nodes(
+                kb_id=kb_id,
+                nodes=nodes,
+                embed_model=embed_model,
+                store_type=kb.vector_store_type,
+                embed_dim=embed_dim,
             )
 
-            collection_name = f"kb_{knowledge_base_id}"
+            total_chunks += len(nodes)
 
-            if not kb.embedding_model_id:
-                logger.error(
-                    f"Knowledge base {knowledge_base_id} has no embedding model configured"
-                )
-                raise ValueError("Knowledge base embedding model is not configured")
+        kb.reindex_required = False
+        await self.session.commit()
 
-            embedding_model_id = str(kb.embedding_model_id)
-            logger.debug(f"Using embedding model: {embedding_model_id}")
+        logger.info(f"Reindex complete: {total_docs} docs, {total_chunks} chunks")
 
-            embedder = await self.embedding_service.get_embedder(embedding_model_id)
-
-            where_filter: dict[str, Any] = {
-                "knowledge_base_id": str(knowledge_base_id),
-            }
-            if filters:
-                where_filter.update(filters)
-
-            # Collect dense results (multi-query optional)
-            queries = (
-                self._generate_alt_queries(query, max_count=multi_query_count)
-                if multi_query
-                else [query]
-            )
-
-            merged: dict[str, VectorDocument] = {}
-
-            # Get appropriate engine for this KB
-            engine = self._get_engine_for_kb(kb)
-
-            async def _add_results(q: str) -> None:
-                # Use engine interface for retrieval (respects KB's engine_type)
-                results = await engine.retrieve(
-                    collection_name=collection_name,
-                    query=q,
-                    embedding_function=embedder,
-                    top_k=k,
-                    similarity_threshold=score_threshold or 0.0,
-                    filter_metadata=where_filter,
-                    search_type=search_type,
-                    fetch_k=effective_fetch_k,
-                    mmr_lambda=mmr_lambda,
-                )
-                for result in results:
-                    metadata = result.metadata or {}
-                    metadata["score"] = result.score
-                    metadata["similarity"] = result.score
-                    metadata.setdefault("retrieval_sources", []).append("dense")
-                    doc = VectorDocument(
-                        page_content=result.content,
-                        metadata=metadata,
-                    )
-                    chunk_id = (
-                        result.id or metadata.get("chunk_id") or metadata.get("id")
-                    )
-                    merged[str(chunk_id)] = doc
-
-            for q in queries:
-                await _add_results(q)
-
-            # Hybrid lexical retrieval (optional)
-            if hybrid_enabled:
-                corpus: dict[str, str] = {}
-                chunk_meta_map: dict[str, dict[str, Any]] = {}
-                chunk_query = (
-                    select(
-                        DocumentChunk.id,
-                        DocumentChunk.content,
-                        DocumentChunk.chunk_metadata,
-                    )
-                    .join(Document, Document.id == DocumentChunk.document_id)
-                    .where(
-                        Document.knowledge_base_id == knowledge_base_id,
-                        Document.status == "ACTIVE",
-                    )
-                    .limit(hybrid_corpus_limit)
-                )
-                chunk_result = await self.session.execute(chunk_query)
-                for cid, content_val, meta in chunk_result.all():
-                    cid_str = str(cid)
-                    corpus[cid_str] = content_val or ""
-                    chunk_meta_map[cid_str] = meta or {}
-
-                bm25_hits = self._bm25_rank(query, corpus)
-                for cid_str, bm25_score in bm25_hits[:effective_fetch_k]:
-                    meta = chunk_meta_map.get(cid_str, {})
-                    doc = VectorDocument(
-                        id=cid_str,
-                        page_content=corpus.get(cid_str, ""),
-                        metadata={
-                            "chunk_id": cid_str,
-                            "knowledge_base_id": str(knowledge_base_id),
-                            "bm25_score": bm25_score,
-                            **meta,
-                        },
-                    )
-                    doc.metadata.setdefault("retrieval_sources", []).append("bm25")
-                    merged[cid_str] = doc
-
-            docs: list[VectorDocument] = list(merged.values())
-
-            # Optional rerank
-            if rerank_top_k:
-                rerank_embedder = embedder
-                if rerank_model_id:
-                    try:
-                        rerank_embedder = await self.embedding_service.get_embedder(
-                            model_id=str(rerank_model_id)
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Failed to load rerank model %s, falling back to embedding model: %s",
-                            rerank_model_id,
-                            exc,
-                        )
-                docs = await self._rerank_with_embeddings(
-                    query=query, docs=docs, embedder=rerank_embedder, top_k=rerank_top_k
-                )
-
-            # Sort by rerank_score, then dense score, then bm25
-            def _score_key(d: VectorDocument):
-                meta = d.metadata or {}
-                if "rerank_score" in meta:
-                    return meta["rerank_score"]
-                if "score" in meta:
-                    return meta["score"]
-                if "bm25_score" in meta:
-                    return meta["bm25_score"]
-                return 0
-
-            docs.sort(key=_score_key, reverse=True)
-
-            if len(docs) > k:
-                docs = docs[:k]
-
-            logger.info(
-                "Relevance search returned %s documents for KB %s",
-                len(docs),
-                knowledge_base_id,
-            )
-            logger.debug(
-                "Retrieval stats kb=%s requested_k=%s fetch_k=%s threshold=%s search_type=%s returned=%s",
-                knowledge_base_id,
-                k,
-                effective_fetch_k,
-                score_threshold,
-                search_type,
-                len(docs),
-            )
-            if not docs:
-                logger.warning(
-                    "Relevance search returned no documents (kb=%s, query_len=%s)",
-                    knowledge_base_id,
-                    len(query),
-                )
-            return docs
-
-        except Exception as e:
-            logger.error(
-                f"Failed to perform RAG query on KB {knowledge_base_id}: {e}",
-                exc_info=True,
-            )
-            raise
+        return {
+            "knowledge_base_id": str(kb_id),
+            "documents_reindexed": total_docs,
+            "chunks_indexed": total_chunks,
+        }
