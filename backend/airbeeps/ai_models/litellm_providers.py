@@ -1,18 +1,20 @@
 """
 LiteLLM provider utilities.
 
-This module provides utilities to work with LiteLLM's built-in provider list
-and model information, avoiding the need to maintain a static catalog.
+This module surfaces LiteLLM's provider list and enriches it with lightweight
+metadata for UI defaults. External registry calls can be disabled, with a small
+override set preserved for common providers.
 """
 
 import logging
+import time
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Provider metadata for common providers
-# This is minimal metadata to help users - the actual provider support comes from LiteLLM
-PROVIDER_METADATA = {
+# Minimal metadata overrides for common providers.
+# Keep this list small; LiteLLM is the source of truth for availability.
+PROVIDER_OVERRIDES: dict[str, dict[str, Any]] = {
     # OpenAI-Compatible Providers
     "groq": {
         "display_name": "Groq",
@@ -42,27 +44,6 @@ PROVIDER_METADATA = {
         "docs_url": "https://docs.perplexity.ai/",
         "description": "Search-augmented LLMs",
     },
-    "deepinfra": {
-        "display_name": "DeepInfra",
-        "category": "OPENAI_COMPATIBLE",
-        "default_base_url": "https://api.deepinfra.com/v1/openai",
-        "docs_url": "https://deepinfra.com/docs",
-        "description": "Serverless inference for open models",
-    },
-    "fireworks_ai": {
-        "display_name": "Fireworks AI",
-        "category": "OPENAI_COMPATIBLE",
-        "default_base_url": "https://api.fireworks.ai/inference/v1",
-        "docs_url": "https://docs.fireworks.ai/",
-        "description": "Fast inference for open models",
-    },
-    "anyscale": {
-        "display_name": "Anyscale",
-        "category": "OPENAI_COMPATIBLE",
-        "default_base_url": "https://api.endpoints.anyscale.com/v1",
-        "docs_url": "https://docs.anyscale.com/",
-        "description": "Ray-powered model serving",
-    },
     # Native Provider APIs
     "openai": {
         "display_name": "OpenAI",
@@ -85,20 +66,6 @@ PROVIDER_METADATA = {
         "docs_url": "https://ai.google.dev/docs",
         "description": "Google's multimodal AI",
     },
-    "vertex_ai": {
-        "display_name": "Google Vertex AI",
-        "category": "PROVIDER_SPECIFIC",
-        "default_base_url": "",  # Uses Google Cloud project
-        "docs_url": "https://cloud.google.com/vertex-ai/docs",
-        "description": "Enterprise Google AI on GCP",
-    },
-    "bedrock": {
-        "display_name": "AWS Bedrock",
-        "category": "PROVIDER_SPECIFIC",
-        "default_base_url": "",  # Uses AWS credentials
-        "docs_url": "https://docs.aws.amazon.com/bedrock/",
-        "description": "Foundation models on AWS",
-    },
     "azure": {
         "display_name": "Azure OpenAI",
         "category": "PROVIDER_SPECIFIC",
@@ -106,26 +73,12 @@ PROVIDER_METADATA = {
         "docs_url": "https://learn.microsoft.com/en-us/azure/ai-services/openai/",
         "description": "OpenAI models on Azure",
     },
-    "cohere": {
-        "display_name": "Cohere",
+    "bedrock": {
+        "display_name": "AWS Bedrock",
         "category": "PROVIDER_SPECIFIC",
-        "default_base_url": "https://api.cohere.ai",
-        "docs_url": "https://docs.cohere.com/",
-        "description": "Command and embedding models",
-    },
-    "mistral": {
-        "display_name": "Mistral AI",
-        "category": "PROVIDER_SPECIFIC",
-        "default_base_url": "https://api.mistral.ai",
-        "docs_url": "https://docs.mistral.ai/",
-        "description": "Open and commercial models",
-    },
-    "xai": {
-        "display_name": "xAI",
-        "category": "PROVIDER_SPECIFIC",
-        "default_base_url": "https://api.x.ai/v1",
-        "docs_url": "https://docs.x.ai/",
-        "description": "Grok models",
+        "default_base_url": "",
+        "docs_url": "https://docs.aws.amazon.com/bedrock/",
+        "description": "Foundation models on AWS",
     },
     # Local/Self-Hosted
     "ollama": {
@@ -150,7 +103,7 @@ PROVIDER_METADATA = {
         "description": "Desktop LLM interface",
     },
     "huggingface": {
-        "display_name": "HuggingFace (Local)",
+        "display_name": "HuggingFace Local Embeddings",
         "category": "LOCAL",
         "default_base_url": "local",
         "docs_url": "https://huggingface.co/docs",
@@ -158,34 +111,93 @@ PROVIDER_METADATA = {
     },
 }
 
+_CACHE_TTL_SECONDS = 300
+_PROVIDER_LIST_CACHE: dict[bool, dict[str, Any]] = {}
+_OPENAI_COMPATIBLE_CACHE: dict[str, Any] = {}
 
-def get_litellm_providers() -> list[str]:
+
+def _fetch_litellm_provider_list() -> list[str]:
+    import litellm
+
+    if hasattr(litellm, "provider_list"):
+        return list(litellm.provider_list)
+
+    if hasattr(litellm, "models_by_provider"):
+        return list(litellm.models_by_provider.keys())
+
+    return []
+
+
+def _fetch_openai_compatible_providers() -> set[str]:
+    """Best-effort lookup of OpenAI-compatible providers from LiteLLM."""
+    try:
+        import litellm
+
+        for attr in (
+            "openai_compatible_providers",
+            "openai_compatible_provider_list",
+            "openai_compatible_providers_list",
+        ):
+            value = getattr(litellm, attr, None)
+            if isinstance(value, (list, set, tuple)):
+                return set(value)
+    except Exception as exc:
+        logger.debug("LiteLLM openai-compatible list unavailable: %s", exc)
+
+    return set()
+
+
+def _get_cached_openai_compatible_providers(allow_external: bool) -> set[str]:
+    if not allow_external:
+        return set()
+
+    cached = _OPENAI_COMPATIBLE_CACHE.get("data")
+    if cached:
+        age = time.monotonic() - cached["ts"]
+        if age < _CACHE_TTL_SECONDS:
+            return cached["providers"]
+
+    providers = _fetch_openai_compatible_providers()
+    _OPENAI_COMPATIBLE_CACHE["data"] = {
+        "ts": time.monotonic(),
+        "providers": providers,
+    }
+    return providers
+
+
+def _get_cached_provider_list(allow_external: bool) -> list[str]:
+    cached = _PROVIDER_LIST_CACHE.get(allow_external)
+    if cached:
+        age = time.monotonic() - cached["ts"]
+        if age < _CACHE_TTL_SECONDS:
+            return list(cached["providers"])
+
+    providers = set(PROVIDER_OVERRIDES.keys())
+    if allow_external:
+        try:
+            providers.update(_fetch_litellm_provider_list())
+        except Exception as exc:
+            logger.warning("Error getting LiteLLM providers: %s", exc)
+
+    provider_list = sorted(providers)
+    _PROVIDER_LIST_CACHE[allow_external] = {
+        "ts": time.monotonic(),
+        "providers": provider_list,
+    }
+    return provider_list
+
+
+def get_litellm_providers(allow_external: bool = True) -> list[str]:
     """
     Get list of all providers supported by LiteLLM.
 
     Returns:
         List of provider identifiers supported by LiteLLM
     """
-    try:
-        import litellm
-
-        # LiteLLM exposes provider_list constant
-        if hasattr(litellm, "provider_list"):
-            return list(litellm.provider_list)
-
-        # Fallback: get from models_by_provider keys
-        if hasattr(litellm, "models_by_provider"):
-            return list(litellm.models_by_provider.keys())
-
-        logger.warning("Could not find provider_list in LiteLLM, using metadata keys")
-        return list(PROVIDER_METADATA.keys())
-
-    except Exception as e:
-        logger.error(f"Error getting LiteLLM providers: {e}")
-        return list(PROVIDER_METADATA.keys())
+    return _get_cached_provider_list(allow_external)
 
 
-def get_provider_info(provider_id: str) -> dict[str, Any]:
+def get_provider_info(provider_id: str, allow_external: bool = True) -> dict[str, Any]:
     """
     Get metadata for a specific provider.
 
@@ -195,43 +207,57 @@ def get_provider_info(provider_id: str) -> dict[str, Any]:
     Returns:
         Dictionary with provider metadata
     """
-    # Check if we have metadata for this provider
-    if provider_id in PROVIDER_METADATA:
+    provider_id = (provider_id or "").strip()
+    if not provider_id:
         return {
-            "id": provider_id,
-            **PROVIDER_METADATA[provider_id],
+            "id": "",
+            "display_name": "",
+            "category": "PROVIDER_SPECIFIC",
+            "default_base_url": "",
+            "docs_url": "",
+            "description": "",
         }
 
-    # Return minimal info for unknown providers
+    override = PROVIDER_OVERRIDES.get(provider_id)
+    if override:
+        return {"id": provider_id, **override}
+
+    category = "PROVIDER_SPECIFIC"
+    openai_compatible = _get_cached_openai_compatible_providers(allow_external)
+    if provider_id in openai_compatible:
+        category = "OPENAI_COMPATIBLE"
+
     return {
         "id": provider_id,
         "display_name": provider_id.replace("_", " ").title(),
-        "category": "PROVIDER_SPECIFIC",
+        "category": category,
         "default_base_url": "",
         "docs_url": f"https://docs.litellm.ai/docs/providers/{provider_id}",
         "description": f"LiteLLM-supported provider: {provider_id}",
     }
 
 
-def get_all_providers_info() -> list[dict[str, Any]]:
+def get_all_providers_info(allow_external: bool = True) -> list[dict[str, Any]]:
     """
     Get metadata for all LiteLLM providers.
 
     Returns:
         List of provider metadata dictionaries
     """
-    providers = get_litellm_providers()
-    return [get_provider_info(p) for p in providers]
+    providers = get_litellm_providers(allow_external=allow_external)
+    return [get_provider_info(p, allow_external=allow_external) for p in providers]
 
 
-def get_providers_by_category() -> dict[str, list[dict[str, Any]]]:
+def get_providers_by_category(
+    allow_external: bool = True,
+) -> dict[str, list[dict[str, Any]]]:
     """
     Get providers grouped by category.
 
     Returns:
         Dictionary mapping category to list of provider info
     """
-    all_providers = get_all_providers_info()
+    all_providers = get_all_providers_info(allow_external=allow_external)
 
     categorized = {
         "OPENAI_COMPATIBLE": [],
@@ -251,16 +277,18 @@ def get_providers_by_category() -> dict[str, list[dict[str, Any]]]:
     return categorized
 
 
-def get_openai_compatible_providers() -> list[dict[str, Any]]:
+def get_openai_compatible_providers(
+    allow_external: bool = True,
+) -> list[dict[str, Any]]:
     """Get list of OpenAI-compatible providers."""
-    return get_providers_by_category()["OPENAI_COMPATIBLE"]
+    return get_providers_by_category(allow_external=allow_external)["OPENAI_COMPATIBLE"]
 
 
-def get_native_providers() -> list[dict[str, Any]]:
+def get_native_providers(allow_external: bool = True) -> list[dict[str, Any]]:
     """Get list of native/provider-specific providers."""
-    return get_providers_by_category()["PROVIDER_SPECIFIC"]
+    return get_providers_by_category(allow_external=allow_external)["PROVIDER_SPECIFIC"]
 
 
-def get_custom_providers() -> list[dict[str, Any]]:
+def get_custom_providers(allow_external: bool = True) -> list[dict[str, Any]]:
     """Get list of custom/self-hosted providers."""
-    return get_providers_by_category()["CUSTOM"]
+    return get_providers_by_category(allow_external=allow_external)["CUSTOM"]

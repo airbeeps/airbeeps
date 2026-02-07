@@ -1,5 +1,6 @@
 import enum
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
@@ -51,11 +52,11 @@ class ModelProvider(Base):
 
     __tablename__ = "model_providers"
 
-    # Optional catalog template id (built-in registry); used for UI suggestions
+    # Optional template id from provider registry; used for UI suggestions
     template_id: Mapped[str | None] = mapped_column(
         String(100),
         nullable=True,
-        comment="Provider template id from built-in catalog",
+        comment="Provider template id from provider registry",
     )
 
     # Provider name, e.g. OpenAI, Anthropic, Google, etc.
@@ -116,11 +117,11 @@ class Model(Base):
 
     __tablename__ = "models"
 
-    # Optional catalog template id (built-in registry); used for UI suggestions
+    # Optional template id from provider registry; used for UI suggestions
     template_id: Mapped[str | None] = mapped_column(
         String(150),
         nullable=True,
-        comment="Model template id/name from built-in catalog",
+        comment="Model template id/name from provider registry",
     )
 
     # Model name (unique identifier within provider)
@@ -222,3 +223,238 @@ class ModelAsset(Base):
         default=dict,
         server_default="{}",
     )
+
+
+class ExperimentStatusEnum(enum.Enum):
+    """A/B experiment status enumeration"""
+
+    DRAFT = "DRAFT"  # Not yet started
+    ACTIVE = "ACTIVE"  # Running
+    PAUSED = "PAUSED"  # Temporarily paused
+    COMPLETED = "COMPLETED"  # Finished
+
+
+class ModelExperiment(Base):
+    """
+    A/B testing experiment for comparing model performance.
+
+    Allows testing different models against each other for quality,
+    cost, and latency comparisons.
+    """
+
+    __tablename__ = "model_experiments"
+
+    # Experiment name
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    # Description
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Status
+    status: Mapped[ExperimentStatusEnum] = mapped_column(
+        SQLEnum(ExperimentStatusEnum),
+        default=ExperimentStatusEnum.DRAFT,
+        nullable=False,
+    )
+
+    # Variant A model
+    model_a_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("models.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Variant B model
+    model_b_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("models.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Traffic split (percentage for variant A, B gets the rest)
+    traffic_split_percent: Mapped[int] = mapped_column(
+        Integer,
+        default=50,
+        nullable=False,
+        comment="Percentage of traffic to variant A (0-100)",
+    )
+
+    # Assistant to run the experiment on (optional - applies to all if null)
+    assistant_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assistants.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Date range
+    start_date: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
+    end_date: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
+    # Minimum sample size for statistical significance
+    min_sample_size: Mapped[int] = mapped_column(
+        Integer,
+        default=100,
+        nullable=False,
+    )
+
+    # Experiment configuration
+    config: Mapped[dict[str, Any]] = mapped_column(
+        MutableDict.as_mutable(JSON),
+        nullable=False,
+        default=dict,
+        server_default="{}",
+    )
+
+    # Relationships
+    model_a: Mapped["Model"] = relationship("Model", foreign_keys=[model_a_id])
+    model_b: Mapped["Model"] = relationship("Model", foreign_keys=[model_b_id])
+    assistant: Mapped["Assistant | None"] = relationship("Assistant")
+    assignments: Mapped[list["ExperimentAssignment"]] = relationship(
+        "ExperimentAssignment",
+        back_populates="experiment",
+        cascade="all, delete-orphan",
+    )
+
+    def __repr__(self):
+        return f"<ModelExperiment(name='{self.name}', status='{self.status.value}')>"
+
+
+class ExperimentAssignment(Base):
+    """
+    Tracks which users are assigned to which variant in an experiment.
+
+    Ensures consistent variant assignment per user/conversation.
+    """
+
+    __tablename__ = "experiment_assignments"
+
+    # Experiment
+    experiment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("model_experiments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # User
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Conversation (optional - for per-conversation assignment)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+
+    # Variant (A or B)
+    variant: Mapped[str] = mapped_column(
+        String(1),
+        nullable=False,
+        comment="A or B",
+    )
+
+    # Assignment timestamp
+    assigned_at: Mapped[datetime] = mapped_column(
+        nullable=False,
+    )
+
+    # Relationships
+    experiment: Mapped["ModelExperiment"] = relationship(
+        "ModelExperiment", back_populates="assignments"
+    )
+
+    # Unique constraint per user+experiment
+    __table_args__ = (
+        UniqueConstraint(
+            "experiment_id", "user_id", name="uq_experiment_user_assignment"
+        ),
+    )
+
+    def __repr__(self):
+        return f"<ExperimentAssignment(experiment_id='{self.experiment_id}', variant='{self.variant}')>"
+
+
+class ModelUsageMetric(Base):
+    """
+    Aggregated model usage metrics for analytics.
+
+    Pre-computed daily metrics for dashboard performance.
+    """
+
+    __tablename__ = "model_usage_metrics"
+
+    # Model
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("models.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Date for daily aggregation
+    metric_date: Mapped[datetime] = mapped_column(
+        nullable=False,
+        index=True,
+    )
+
+    # Usage counts
+    total_requests: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    successful_requests: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_requests: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Token usage
+    total_prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_completion_tokens: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+
+    # Cost
+    total_cost_usd: Mapped[float] = mapped_column(
+        nullable=False,
+        default=0.0,
+    )
+
+    # Latency (aggregated)
+    avg_latency_ms: Mapped[float] = mapped_column(
+        nullable=False,
+        default=0.0,
+    )
+    min_latency_ms: Mapped[float] = mapped_column(
+        nullable=True,
+    )
+    max_latency_ms: Mapped[float] = mapped_column(
+        nullable=True,
+    )
+    p95_latency_ms: Mapped[float] = mapped_column(
+        nullable=True,
+    )
+
+    # Quality metrics (from feedback)
+    total_feedback_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    positive_feedback_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+    negative_feedback_count: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False
+    )
+
+    # Unique users
+    unique_users: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Relationships
+    model: Mapped["Model"] = relationship("Model")
+
+    # Unique constraint per model+date
+    __table_args__ = (
+        UniqueConstraint("model_id", "metric_date", name="uq_model_usage_metric"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<ModelUsageMetric(model_id='{self.model_id}', date='{self.metric_date}')>"
+        )

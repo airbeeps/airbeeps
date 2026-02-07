@@ -1,16 +1,25 @@
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from fastapi_users_db_sqlalchemy import (
     SQLAlchemyBaseUserTableUUID,
 )
-from sqlalchemy import DateTime, Integer, String
+from sqlalchemy import DateTime, Enum as SQLEnum, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from airbeeps.models import Base
 
 if TYPE_CHECKING:
     from airbeeps.auth.refresh_token_models import RefreshToken
+
+
+class UserRole(str, Enum):
+    """User roles for RBAC"""
+
+    ADMIN = "admin"
+    EDITOR = "editor"
+    VIEWER = "viewer"
 
 
 class User(Base, SQLAlchemyBaseUserTableUUID):
@@ -22,6 +31,14 @@ class User(Base, SQLAlchemyBaseUserTableUUID):
     name: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     avatar_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # User role for RBAC (superuser bypasses all role checks)
+    role: Mapped[UserRole | None] = mapped_column(
+        SQLEnum(UserRole, values_callable=lambda x: [e.value for e in x]),
+        nullable=True,
+        default=UserRole.VIEWER,
+        index=True,
+    )
 
     # User language preference (currently English only)
     language: Mapped[str | None] = mapped_column(

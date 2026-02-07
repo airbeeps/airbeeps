@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi_pagination import Page
@@ -39,48 +40,81 @@ from .schemas import (
 
 router = APIRouter()
 
+AI_REGISTRY_ALLOW_EXTERNAL_KEY = "ai_registry_allow_external"
+HF_EMBEDDING_SEARCH_TTL_SECONDS = 300
+_HF_EMBEDDING_SEARCH_CACHE: dict[str, dict[str, Any]] = {}
+
 
 # ============================================================================
 # LiteLLM Providers (Dynamic from LiteLLM SDK)
 # ============================================================================
 
 
+async def _allow_external_registry(session: AsyncSession) -> bool:
+    """Check if external registry lookups are allowed."""
+    from airbeeps.config import settings
+    from airbeeps.system_config.service import config_service
+
+    default = getattr(settings, "AI_REGISTRY_ALLOW_EXTERNAL", True)
+    value = await config_service.get_config_value(
+        session, AI_REGISTRY_ALLOW_EXTERNAL_KEY, default
+    )
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+    return bool(value)
+
+
 @router.get(
     "/litellm-providers",
     summary="List all providers supported by LiteLLM",
 )
-async def list_litellm_providers():
+async def list_litellm_providers(
+    session: AsyncSession = Depends(get_async_session),
+):
     """
     Get list of all providers supported by LiteLLM SDK.
     This is dynamically fetched from LiteLLM's provider_list.
     """
     from airbeeps.ai_models.litellm_providers import get_all_providers_info
 
-    return get_all_providers_info()
+    allow_external = await _allow_external_registry(session)
+    return get_all_providers_info(allow_external=allow_external)
 
 
 @router.get(
     "/litellm-providers/by-category",
     summary="List LiteLLM providers grouped by category",
 )
-async def list_litellm_providers_by_category():
+async def list_litellm_providers_by_category(
+    session: AsyncSession = Depends(get_async_session),
+):
     """
     Get providers grouped by category (OpenAI-compatible, Native, Custom, Local).
     """
     from airbeeps.ai_models.litellm_providers import get_providers_by_category
 
-    return get_providers_by_category()
+    allow_external = await _allow_external_registry(session)
+    return get_providers_by_category(allow_external=allow_external)
 
 
 @router.get(
     "/litellm-providers/{provider_id}",
     summary="Get info for a specific LiteLLM provider",
 )
-async def get_litellm_provider_info(provider_id: str):
+async def get_litellm_provider_info(
+    provider_id: str,
+    session: AsyncSession = Depends(get_async_session),
+):
     """Get metadata for a specific LiteLLM provider."""
     from airbeeps.ai_models.litellm_providers import get_provider_info
 
-    return get_provider_info(provider_id)
+    allow_external = await _allow_external_registry(session)
+    return get_provider_info(provider_id, allow_external=allow_external)
 
 
 # ============================================================================
@@ -101,8 +135,8 @@ async def list_available_models(
     Fetch available models from the provider.
 
     This endpoint:
-    1. Attempts to fetch models directly from the provider (quick method)
-    2. Falls back to comprehensive discovery if quick fails
+    1. For LOCAL providers: Returns locally cached + recommended embedding models
+    2. For other providers: Attempts to fetch models directly (quick or comprehensive)
     3. Caches results in memory for 5 minutes
     4. Returns empty list if provider doesn't support discovery
 
@@ -131,8 +165,14 @@ async def list_available_models(
 
     # Try to discover models
     try:
-        # First try quick discovery (OpenAI-compatible)
-        if provider.category == ProviderCategoryEnum.OPENAI_COMPATIBLE or (
+        # LOCAL providers (HuggingFace embeddings)
+        if provider.category == ProviderCategoryEnum.LOCAL:
+            models = await _discover_local_embedding_models()
+            logger.info(
+                f"Local embedding discovery found {len(models)} models for provider {provider_id}"
+            )
+        # OpenAI-compatible providers
+        elif provider.category == ProviderCategoryEnum.OPENAI_COMPATIBLE or (
             provider.category == ProviderCategoryEnum.CUSTOM
             and provider.is_openai_compatible
         ):
@@ -414,6 +454,41 @@ async def _discover_models_comprehensive(provider: ModelProvider) -> list[str]:
                 del os.environ[var]
 
 
+async def _discover_local_embedding_models() -> list[str]:
+    """
+    Discover local embedding models.
+
+    Returns models that are:
+    1. Already cached locally (in HF cache or AirBeeps downloads)
+    2. Recommended embedding models from our catalog
+    """
+    # Get locally installed models
+    installed_models = list_hf_hub_cached_model_repo_ids()
+
+    # Get recommended models from catalog
+    from airbeeps.ai_models.hf_embeddings_catalog import get_recommended_embeddings
+
+    recommended_ids = [m["id"] for m in get_recommended_embeddings()]
+
+    # Combine: installed models first, then recommended (avoiding duplicates)
+    all_models = []
+    seen = set()
+
+    # Add installed models first (they're ready to use)
+    for model_id in installed_models:
+        if model_id not in seen:
+            all_models.append(model_id)
+            seen.add(model_id)
+
+    # Add recommended models (these can be downloaded)
+    for model_id in recommended_ids:
+        if model_id not in seen:
+            all_models.append(model_id)
+            seen.add(model_id)
+
+    return all_models
+
+
 @router.get(
     "/providers/{provider_id}/discover-models",
     summary="Discover available models from provider",
@@ -619,11 +694,20 @@ async def list_all_models(
         None,
         description="Filter model capabilities, return models containing all specified capabilities, multiple selection allowed",
     ),
+    search: str | None = Query(None, description="Search in name or display_name"),
     session: AsyncSession = Depends(get_async_session),
 ):
     """List all models, support filtering by multiple capabilities (all must be included)"""
     query = select(Model).options(selectinload(Model.provider))
     query = query.where(Model.status == ModelStatusEnum.ACTIVE)
+
+    # Apply search filter
+    if search:
+        search_term = f"%{search}%"
+        query = query.where(
+            (Model.name.ilike(search_term)) | (Model.display_name.ilike(search_term))
+        )
+
     result = await session.execute(query)
     models = result.scalars().all()
 
@@ -816,6 +900,116 @@ async def delete_model(
 # ============================================================================
 # Local model assets (Hugging Face local embeddings)
 # ============================================================================
+
+
+@router.get(
+    "/model-assets/huggingface/embeddings/search",
+    summary="Search Hugging Face Hub for embedding models",
+)
+async def search_hf_embedding_models(
+    q: str | None = Query("", description="Search query for model repo id"),
+    limit: int = Query(20, ge=1, le=100, description="Max results"),
+    cursor: str | None = Query(None, description="Optional cursor for paging"),
+    session: AsyncSession = Depends(get_async_session),
+):
+    from datetime import datetime, timedelta
+
+    allow_external = await _allow_external_registry(session)
+    if not allow_external:
+        return {
+            "query": q or "",
+            "results": [],
+            "next_cursor": None,
+            "external_enabled": False,
+        }
+
+    cache_key = f"{q or ''}|{limit}|{cursor or ''}"
+    cached = _HF_EMBEDDING_SEARCH_CACHE.get(cache_key)
+    if cached:
+        age = datetime.now() - cached["timestamp"]
+        if age < timedelta(seconds=HF_EMBEDDING_SEARCH_TTL_SECONDS):
+            return cached["data"]
+
+    try:
+        from huggingface_hub import HfApi
+    except Exception as exc:
+        raise HTTPException(
+            status_code=501,
+            detail="Hugging Face Hub search requires huggingface_hub.",
+        ) from exc
+
+    query = (q or "").strip()
+    api = HfApi()
+
+    search_params: dict[str, object] = {
+        "search": query or None,
+        "limit": limit,
+        "sort": "downloads",
+        "direction": -1,
+        "full": False,
+    }
+    if cursor:
+        search_params["cursor"] = cursor
+
+    try:
+        models = api.list_models(**search_params)
+    except TypeError:
+        # Older huggingface_hub may not support cursor
+        search_params.pop("cursor", None)
+        models = api.list_models(**search_params)
+
+    allowed_pipeline_tags = {
+        "feature-extraction",
+        "sentence-similarity",
+        "text-embedding",
+        "text-embeddings",
+    }
+    installed_ids = set(list_hf_hub_cached_model_repo_ids())
+
+    results = []
+    for info in list(models):
+        repo_id = getattr(info, "modelId", None) or getattr(info, "id", None)
+        if not repo_id:
+            continue
+
+        pipeline_tag = getattr(info, "pipeline_tag", None)
+        library_name = getattr(info, "library_name", None)
+        repo_lower = repo_id.lower()
+        is_embeddingish = (
+            pipeline_tag in allowed_pipeline_tags
+            or library_name == "sentence-transformers"
+            or "sentence-transformers" in repo_lower
+            or "embedding" in repo_lower
+        )
+        if not is_embeddingish:
+            continue
+
+        display_name = repo_id.split("/")[-1].replace("-", " ").replace("_", " ")
+
+        results.append(
+            {
+                "repo_id": repo_id,
+                "display_name": display_name,
+                "downloads": getattr(info, "downloads", None),
+                "likes": getattr(info, "likes", None),
+                "pipeline_tag": pipeline_tag,
+                "library_name": library_name,
+                "is_installed": repo_id in installed_ids,
+            }
+        )
+
+    data = {
+        "query": query,
+        "results": results,
+        "next_cursor": None,
+        "external_enabled": True,
+    }
+
+    _HF_EMBEDDING_SEARCH_CACHE[cache_key] = {
+        "data": data,
+        "timestamp": datetime.now(),
+    }
+    return data
 
 
 @router.get(

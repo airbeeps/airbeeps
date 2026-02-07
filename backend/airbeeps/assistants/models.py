@@ -225,6 +225,174 @@ class Assistant(Base):
         comment="Tool configuration parameters for agent",
     )
 
+    # Agent behavior - Planning and reflection
+    agent_enable_planning: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="true",
+        nullable=False,
+        comment="Enable LLM-based task planning",
+    )
+
+    agent_enable_reflection: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="true",
+        nullable=False,
+        comment="Enable quality reflection after tool use",
+    )
+
+    agent_reflection_threshold: Mapped[float] = mapped_column(
+        default=7.0,
+        server_default="7.0",
+        nullable=False,
+        comment="Quality threshold (0-10) for reflection pass",
+    )
+
+    # Budget controls
+    agent_token_budget: Mapped[int] = mapped_column(
+        Integer,
+        default=8000,
+        server_default="8000",
+        nullable=False,
+        comment="Maximum tokens per conversation turn",
+    )
+
+    agent_max_tool_calls: Mapped[int] = mapped_column(
+        Integer,
+        default=20,
+        server_default="20",
+        nullable=False,
+        comment="Maximum tool calls per conversation",
+    )
+
+    agent_cost_limit_usd: Mapped[float] = mapped_column(
+        default=0.50,
+        server_default="0.50",
+        nullable=False,
+        comment="Maximum cost per conversation in USD",
+    )
+
+    agent_max_parallel_tools: Mapped[int] = mapped_column(
+        Integer,
+        default=3,
+        server_default="3",
+        nullable=False,
+        comment="Maximum concurrent tool calls",
+    )
+
+    # Memory feature toggle
+    enable_memory: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+        comment="Whether to enable long-term memory for this assistant",
+    )
+
+    # Agentic RAG configuration (Phase 5)
+    agent_rag_mode: Mapped[str] = mapped_column(
+        String(50),
+        default="standard",
+        server_default="standard",
+        nullable=False,
+        comment="Agentic RAG mode: standard, query_planning, self_rag, multi_hop",
+    )
+
+    agent_enable_query_planning: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+        comment="Enable query decomposition for complex queries",
+    )
+
+    agent_enable_self_rag: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+        comment="Enable self-critique and retry for retrieval",
+    )
+
+    agent_enable_multi_hop: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+        comment="Enable multi-hop retrieval for complex reasoning",
+    )
+
+    agent_self_rag_min_confidence: Mapped[int] = mapped_column(
+        Integer,
+        default=50,
+        server_default="50",
+        nullable=False,
+        comment="Minimum confidence score (0-100) for self-RAG to accept results",
+    )
+
+    agent_multi_hop_max_hops: Mapped[int] = mapped_column(
+        Integer,
+        default=3,
+        server_default="3",
+        nullable=False,
+        comment="Maximum number of retrieval hops for multi-hop mode",
+    )
+
+    agent_tool_timeout_seconds: Mapped[int] = mapped_column(
+        Integer,
+        default=30,
+        server_default="30",
+        nullable=False,
+        comment="Default timeout for tool execution in seconds",
+    )
+
+    agent_tool_max_retries: Mapped[int] = mapped_column(
+        Integer,
+        default=2,
+        server_default="2",
+        nullable=False,
+        comment="Maximum retries for failed tool calls",
+    )
+
+    # Multi-Agent configuration (Phase 6)
+    specialist_type: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+        comment="Specialist type: RESEARCH, CODE, DATA, GENERAL",
+    )
+
+    can_collaborate: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+        comment="Whether this assistant can participate in multi-agent collaboration",
+    )
+
+    collaboration_max_handoffs: Mapped[int] = mapped_column(
+        Integer,
+        default=3,
+        server_default="3",
+        nullable=False,
+        comment="Maximum handoffs allowed during collaboration",
+    )
+
+    collaboration_cost_limit_per_handoff: Mapped[float] = mapped_column(
+        default=0.25,
+        server_default="0.25",
+        nullable=False,
+        comment="Cost limit per handoff in USD",
+    )
+
+    collaboration_allowed_specialists: Mapped[list[str]] = mapped_column(
+        MutableList.as_mutable(JSON),
+        nullable=False,
+        default=list,
+        server_default="[]",
+        comment="List of specialist types this assistant can collaborate with",
+    )
+
     # RAG configuration (retrieval count, similarity threshold, etc.)
     rag_config: Mapped[dict[str, Any]] = mapped_column(
         MutableDict.as_mutable(JSON), nullable=False, default=dict
@@ -412,6 +580,33 @@ class Message(Base):
         JSON, nullable=False, default=dict
     )
 
+    # Message editing fields
+    edited_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        comment="Timestamp when message was last edited",
+    )
+
+    original_content: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Original content before first edit (preserved for history)",
+    )
+
+    is_regenerated: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+        comment="Whether this is a regenerated assistant response",
+    )
+
+    parent_message_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"),
+        nullable=True,
+        comment="Parent message ID for regenerated responses",
+    )
+
     # Associated conversation
     conversation: Mapped["Conversation"] = relationship(
         "Conversation", back_populates="messages"
@@ -419,6 +614,11 @@ class Message(Base):
 
     # Associated user (for user messages)
     user: Mapped["User | None"] = relationship("User")
+
+    # Self-referential relationship for regenerated messages
+    parent_message: Mapped["Message | None"] = relationship(
+        "Message", remote_side="Message.id", foreign_keys=[parent_message_id]
+    )
 
     def __repr__(self):
         return f"<Message(type='{self.message_type}', conversation_id='{self.conversation_id}')>"

@@ -32,7 +32,7 @@ class ModelProviderBase(BaseModel):
     template_id: str | None = Field(
         None,
         max_length=100,
-        description="Optional provider template id from built-in catalog",
+        description="Optional provider template id from LiteLLM provider registry",
     )
     name: str = Field(..., max_length=100, description="Provider name")
     display_name: str = Field(..., max_length=200, description="Provider display name")
@@ -101,7 +101,7 @@ class ModelBase(BaseModel):
     template_id: str | None = Field(
         None,
         max_length=150,
-        description="Optional model template id/name from built-in catalog",
+        description="Optional model template id/name from provider discovery",
     )
     name: str = Field(..., max_length=200, description="Model name")
     display_name: str = Field(..., max_length=300, description="Model display name")
