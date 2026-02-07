@@ -344,3 +344,38 @@ def get_token_usage_from_events(events: list[dict[str, Any]]) -> dict[str, int] 
             return event.get("data")
 
     return None
+
+
+async def edit_message(
+    client: AsyncClient,
+    cookies: dict[str, str],
+    conversation_id: str,
+    message_id: str,
+    content: str,
+    regenerate: bool = False,
+) -> Response:
+    """
+    Edit a user message in a conversation.
+
+    Args:
+        client: Test HTTP client
+        cookies: Auth cookies from login
+        conversation_id: ID of the conversation
+        message_id: ID of the message to edit
+        content: New content for the message
+        regenerate: Whether to regenerate the assistant response
+
+    Returns:
+        Response from the edit message endpoint
+    """
+    payload = {
+        "content": content,
+        "regenerate": regenerate,
+    }
+
+    response = await client.patch(
+        f"/api/v1/conversations/{conversation_id}/messages/{message_id}/edit",
+        json=payload,
+        headers=_auth_headers(cookies),
+    )
+    return response

@@ -1,191 +1,171 @@
 """
-Unit tests for RAG service functionality.
-
-Tests for document ingestion, chunking, and retrieval logic.
+Unit tests for the LlamaIndex-based RAG service.
 """
 
-from airbeeps.rag.chunker import DocumentChunker
+import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from airbeeps.rag.service import RAGService, RetrievalResult
 
 
-class TestDocumentChunker:
-    """Tests for the DocumentChunker class."""
+class TestRetrievalResult:
+    """Tests for RetrievalResult dataclass."""
 
-    def test_chunk_small_document(self):
-        """Small documents should produce a single chunk."""
-        chunker = DocumentChunker()
-        text = "This is a short document."
-
-        chunks = chunker.chunk_document(
-            text,
-            chunk_size=100,
-            chunk_overlap=20,
+    def test_create_retrieval_result(self):
+        """Test creating a RetrievalResult."""
+        result = RetrievalResult(
+            content="Test content",
+            score=0.95,
+            metadata={"key": "value"},
+            node_id="node-1",
+            document_id="doc-1",
+            chunk_id="chunk-1",
+            title="Test Document",
         )
 
-        assert len(chunks) >= 1
-        # All text should be in chunks
-        combined = " ".join(c.content for c in chunks)
-        assert "short document" in combined
+        assert result.content == "Test content"
+        assert result.score == 0.95
+        assert result.metadata == {"key": "value"}
+        assert result.node_id == "node-1"
+        assert result.document_id == "doc-1"
+        assert result.chunk_id == "chunk-1"
+        assert result.title == "Test Document"
 
-    def test_chunk_large_document(self):
-        """Large documents should be split into multiple chunks."""
-        chunker = DocumentChunker()
-        # Create a document with many words
-        text = " ".join(["word"] * 1000)
+    def test_retrieval_result_defaults(self):
+        """Test RetrievalResult default values."""
+        result = RetrievalResult(content="Test", score=0.5)
 
-        chunks = chunker.chunk_document(
-            text,
-            chunk_size=100,
-            chunk_overlap=20,
+        assert result.metadata == {}
+        assert result.node_id is None
+        assert result.document_id is None
+        assert result.chunk_id is None
+        assert result.title is None
+        assert result.retrieval_sources == []
+
+
+class TestRAGServiceFileTypeInference:
+    """Tests for file type inference."""
+
+    @pytest.fixture
+    def rag_service(self):
+        """Create a RAG service with mocked session."""
+        mock_session = MagicMock()
+        return RAGService(session=mock_session)
+
+    def test_infer_pdf_type(self, rag_service):
+        """Test PDF file type inference."""
+        assert rag_service._infer_file_type("document.pdf", None) == "pdf"
+        assert rag_service._infer_file_type(None, "/path/to/file.PDF") == "pdf"
+
+    def test_infer_excel_types(self, rag_service):
+        """Test Excel file type inference."""
+        assert rag_service._infer_file_type("data.xlsx", None) == "xlsx"
+        assert rag_service._infer_file_type("data.xls", None) == "xls"
+        assert rag_service._infer_file_type("data.csv", None) == "csv"
+
+    def test_infer_text_types(self, rag_service):
+        """Test text file type inference."""
+        assert rag_service._infer_file_type("readme.txt", None) == "txt"
+        assert rag_service._infer_file_type("readme.md", None) == "md"
+        assert rag_service._infer_file_type("doc.docx", None) == "docx"
+
+    def test_infer_unknown_type(self, rag_service):
+        """Test unknown file type returns None."""
+        assert rag_service._infer_file_type("file.xyz", None) is None
+        assert rag_service._infer_file_type(None, None) is None
+
+
+class TestRAGServiceRowToText:
+    """Tests for tabular row to text conversion."""
+
+    @pytest.fixture
+    def rag_service(self):
+        """Create a RAG service with mocked session."""
+        mock_session = MagicMock()
+        return RAGService(session=mock_session)
+
+    def test_row_to_text_basic(self, rag_service):
+        """Test basic row to text conversion."""
+        import pandas as pd
+
+        row = pd.Series({"Name": "John", "Age": 30, "City": "NYC"})
+        columns = pd.Index(["Name", "Age", "City"])
+
+        result = rag_service._row_to_text(row, columns, clean_data=False)
+
+        assert "Name: John" in result
+        assert "Age: 30" in result
+        assert "City: NYC" in result
+
+    def test_row_to_text_with_nan(self, rag_service):
+        """Test row to text with NaN values."""
+        import pandas as pd
+
+        row = pd.Series({"Name": "John", "Age": float("nan"), "City": "NYC"})
+        columns = pd.Index(["Name", "Age", "City"])
+
+        result = rag_service._row_to_text(row, columns, clean_data=False)
+
+        assert "Name: John" in result
+        assert "Age" not in result  # NaN should be skipped
+        assert "City: NYC" in result
+
+    def test_row_to_text_integer_float(self, rag_service):
+        """Test that integer floats are converted to int strings."""
+        import pandas as pd
+
+        row = pd.Series({"Count": 5.0, "Price": 19.99})
+        columns = pd.Index(["Count", "Price"])
+
+        result = rag_service._row_to_text(row, columns, clean_data=False)
+
+        assert "Count: 5" in result  # 5.0 -> "5"
+        assert "Price: 19.99" in result
+
+
+class TestRAGServiceIntegration:
+    """Integration tests for RAG service (requires mocking)."""
+
+    @pytest.fixture
+    def mock_kb(self):
+        """Create a mock knowledge base."""
+        kb = MagicMock()
+        kb.id = uuid.uuid4()
+        kb.name = "Test KB"
+        kb.status = "ACTIVE"
+        kb.embedding_model_id = uuid.uuid4()
+        kb.vector_store_type = "qdrant"
+        kb.chunk_size = 512
+        kb.chunk_overlap = 50
+        return kb
+
+    @pytest.mark.asyncio
+    async def test_get_knowledge_base_not_found(self):
+        """Test getting non-existent knowledge base."""
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
         )
 
-        assert len(chunks) > 1
-        # Each chunk should respect the token limit
-        for chunk in chunks:
-            assert (
-                chunk.token_count <= 100 or chunk.token_count <= 150
-            )  # Allow some flexibility
+        service = RAGService(session=mock_session)
+        result = await service.get_knowledge_base(uuid.uuid4())
 
-    def test_chunk_with_overlap(self):
-        """Chunks should have overlapping content when overlap is set."""
-        chunker = DocumentChunker()
-        text = "word " * 200  # Enough words to need multiple chunks
+        assert result is None
 
-        chunks = chunker.chunk_document(
-            text,
-            chunk_size=50,
-            chunk_overlap=10,
+    @pytest.mark.asyncio
+    async def test_relevance_search_kb_not_found(self):
+        """Test relevance search with non-existent KB."""
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
         )
 
-        # Should have multiple chunks
-        assert len(chunks) > 1
+        service = RAGService(session=mock_session)
 
-    def test_chunk_empty_document(self):
-        """Empty documents should return empty or minimal chunks."""
-        chunker = DocumentChunker()
-        text = ""
-
-        chunks = chunker.chunk_document(
-            text,
-            chunk_size=100,
-            chunk_overlap=20,
-        )
-
-        # Should handle empty gracefully
-        assert isinstance(chunks, list)
-
-    def test_chunk_with_metadata(self):
-        """Chunks should include provided metadata."""
-        chunker = DocumentChunker()
-        text = "Test document content"
-        metadata = {"document_id": "123", "title": "Test Doc"}
-
-        chunks = chunker.chunk_document(
-            text,
-            chunk_size=100,
-            chunk_overlap=20,
-            metadata=metadata,
-        )
-
-        assert len(chunks) >= 1
-        for chunk in chunks:
-            assert chunk.metadata.get("document_id") == "123"
-            assert chunk.metadata.get("title") == "Test Doc"
-
-    def test_chunk_respects_max_tokens(self):
-        """Chunks should not exceed max_tokens_per_chunk."""
-        chunker = DocumentChunker()
-        text = "hello " * 500
-
-        chunks = chunker.chunk_document(
-            text,
-            chunk_size=50,
-            chunk_overlap=10,
-            max_tokens_per_chunk=50,
-        )
-
-        assert len(chunks) > 1
-        for chunk in chunks:
-            assert chunk.token_count <= 50
-
-    def test_chunk_unicode_content(self):
-        """Chunker should handle unicode content correctly."""
-        chunker = DocumentChunker()
-        text = "Hello 世界! Привет мир! مرحبا بالعالم " * 50
-
-        chunks = chunker.chunk_document(
-            text,
-            chunk_size=50,
-            chunk_overlap=10,
-        )
-
-        assert len(chunks) >= 1
-        # Should not crash with unicode
-
-    def test_chunk_code_content(self):
-        """Chunker should handle code content correctly."""
-        chunker = DocumentChunker()
-        code = (
-            """
-def hello_world():
-    print("Hello, World!")
-
-class MyClass:
-    def __init__(self):
-        self.value = 42
-
-    def get_value(self):
-        return self.value
-"""
-            * 20
-        )
-
-        chunks = chunker.chunk_document(
-            code,
-            chunk_size=100,
-            chunk_overlap=20,
-        )
-
-        assert len(chunks) >= 1
-
-
-class TestIngestionStageWeights:
-    """Tests for ingestion stage weight configuration."""
-
-    def test_stage_weights_sum_to_100(self):
-        """Stage weights should sum to 100 for proper progress calculation."""
-        from airbeeps.rag.ingestion_runner import STAGE_WEIGHTS
-
-        total = sum(STAGE_WEIGHTS.values())
-        assert total == 100
-
-    def test_all_stages_have_weights(self):
-        """All expected stages should have weight definitions."""
-        from airbeeps.rag.ingestion_runner import STAGE_WEIGHTS
-
-        expected_stages = {"PARSING", "CHUNKING", "EMBEDDING", "UPSERTING"}
-        assert set(STAGE_WEIGHTS.keys()) == expected_stages
-
-
-class TestDocumentContentExtraction:
-    """Tests for document content extraction."""
-
-    def test_infer_file_type_from_extension(self):
-        """File type should be inferred from file extension."""
-        from airbeeps.rag.ingestion_runner import IngestionRunner
-
-        runner = IngestionRunner.__new__(IngestionRunner)
-
-        assert runner._infer_file_type("document.pdf", None) == "pdf"
-        assert runner._infer_file_type("spreadsheet.xlsx", None) == "xlsx"
-        assert runner._infer_file_type("data.csv", None) == "csv"
-        assert runner._infer_file_type("notes.txt", None) == "txt"
-        assert runner._infer_file_type("README.md", None) == "md"
-
-    def test_infer_file_type_case_insensitive(self):
-        """File extension matching should be case insensitive."""
-        from airbeeps.rag.ingestion_runner import IngestionRunner
-
-        runner = IngestionRunner.__new__(IngestionRunner)
-
-        assert runner._infer_file_type("DOCUMENT.PDF", None) == "pdf"
-        assert runner._infer_file_type("Report.DOCX", None) == "docx"
+        with pytest.raises(ValueError, match="Knowledge base not found"):
+            await service.relevance_search(
+                query="test query",
+                knowledge_base_id=uuid.uuid4(),
+            )
