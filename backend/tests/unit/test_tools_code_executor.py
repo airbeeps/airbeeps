@@ -57,8 +57,8 @@ class TestCodeExecutorTool:
     def test_tool_properties(self):
         """Should have correct tool properties."""
         with patch("airbeeps.agents.tools.code_executor.CodeSandbox"):
-            from airbeeps.agents.tools.code_executor import CodeExecutorTool
             from airbeeps.agents.tools.base import ToolSecurityLevel
+            from airbeeps.agents.tools.code_executor import CodeExecutorTool
 
             tool = CodeExecutorTool()
 

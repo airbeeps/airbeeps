@@ -17,7 +17,6 @@ from io import BytesIO
 from typing import Any
 
 import pandas as pd
-from llama_index.core.schema import Document as LlamaDocument
 from llama_index.core.schema import NodeWithScore, TextNode
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,13 +28,12 @@ from airbeeps.files.service import FileService
 from .cleaners import apply_cleaners
 from .content_extractor import DocumentContentExtractor
 from .doc_processor import DocumentProcessor, get_document_processor
-from .embeddings import EmbeddingService, get_embedding_service
+from .embeddings import get_embedding_service
 from .hybrid_retriever import build_hybrid_retriever
-from .index_manager import IndexManager, get_index_manager
+from .index_manager import get_index_manager
 from .models import Document, DocumentChunk, KnowledgeBase
-from .query_transform import QueryTransformer, QueryTransformType, get_query_transformer
+from .query_transform import get_query_transformer
 from .reranker import get_reranker
-from .stores import VectorStoreType
 
 logger = logging.getLogger(__name__)
 
@@ -493,7 +491,7 @@ class RAGService:
             if existing:
                 if dedup_strategy == "skip":
                     return existing, "skipped", None
-                elif dedup_strategy == "replace":
+                if dedup_strategy == "replace":
                     replaced_id = existing.id
                     await self.delete_document(existing.id, owner_id)
                     dedup_status = "replaced"

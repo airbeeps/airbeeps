@@ -76,4 +76,3 @@ class TestGetReranker:
         """Test BGE type is inferred from model name."""
         # This would need the actual flag_embedding_reranker package installed
         # For unit testing, we just verify the logic
-        pass

@@ -368,19 +368,18 @@ class AgenticKnowledgeBaseTool(AgentTool):
                     query, kb_id, rag_service, llm, top_k
                 )
 
-            elif agentic_mode == AgenticRAGMode.SELF_RAG:
+            if agentic_mode == AgenticRAGMode.SELF_RAG:
                 return await self._execute_self_rag(
                     query, kb_id, rag_service, llm, top_k, max_attempts
                 )
 
-            elif agentic_mode == AgenticRAGMode.MULTI_HOP:
+            if agentic_mode == AgenticRAGMode.MULTI_HOP:
                 return await self._execute_multi_hop(
                     query, kb_id, rag_service, llm, top_k, max_hops
                 )
 
-            else:
-                # Standard mode
-                return await self._execute_standard(query, kb_id, rag_service, top_k)
+            # Standard mode
+            return await self._execute_standard(query, kb_id, rag_service, top_k)
 
         except Exception as e:
             logger.exception(f"Agentic KB query failed: {e}")

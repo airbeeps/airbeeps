@@ -77,14 +77,14 @@ def _load_yaml_config() -> dict[str, Any]:
     base_config = {}
     base_config_path = CONFIG_DIR / "settings.yaml"
     if base_config_path.exists():
-        with open(base_config_path, "r", encoding="utf-8") as f:
+        with open(base_config_path, encoding="utf-8") as f:
             base_config = yaml.safe_load(f) or {}
 
     # Load environment-specific config
     env_config = {}
     env_config_path = CONFIG_DIR / f"settings.{config_env.lower()}.yaml"
     if env_config_path.exists():
-        with open(env_config_path, "r", encoding="utf-8") as f:
+        with open(env_config_path, encoding="utf-8") as f:
             env_config = yaml.safe_load(f) or {}
 
     # Merge configs

@@ -5,7 +5,6 @@ Provides scoped file read/write operations within allowed directories only.
 """
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -365,7 +364,7 @@ class FileListTool(AgentTool):
             return False, "No allowed paths configured", None
 
         try:
-            dir_path = Path(path) if path and path != "." else Path(".")
+            dir_path = Path(path) if path and path != "." else Path()
 
             if ".." in path:
                 return False, "Path traversal not allowed", None
@@ -410,11 +409,10 @@ class FileListTool(AgentTool):
                     files = list(resolved_path.rglob(pattern))
                 else:
                     files = list(resolved_path.glob(pattern))
+            elif recursive:
+                files = list(resolved_path.rglob("*"))
             else:
-                if recursive:
-                    files = list(resolved_path.rglob("*"))
-                else:
-                    files = list(resolved_path.iterdir())
+                files = list(resolved_path.iterdir())
 
             # Format output
             lines = [f"Directory: {path}"]

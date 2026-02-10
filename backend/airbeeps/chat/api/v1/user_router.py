@@ -5,6 +5,7 @@ Chat API router
 import json
 import logging
 import uuid
+from datetime import UTC
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -249,7 +250,7 @@ async def edit_message(
     5. Deletes all messages after the edited message
     6. Returns the edited message and count of deleted messages
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     # Get conversation to verify ownership
     service = LangchainChatService(session)
@@ -277,7 +278,7 @@ async def edit_message(
 
     # Update content and edited_at
     message.content = payload.content
-    message.edited_at = datetime.now(timezone.utc)
+    message.edited_at = datetime.now(UTC)
 
     # Delete all messages after the edited message
     delete_stmt = select(Message).where(

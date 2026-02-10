@@ -144,7 +144,7 @@ def get_vector_store(
 
 
 __all__ = [
-    "VectorStoreType",
     "VectorStoreFactory",
+    "VectorStoreType",
     "get_vector_store",
 ]

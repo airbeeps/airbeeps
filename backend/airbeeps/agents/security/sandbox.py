@@ -140,8 +140,7 @@ class CodeSandbox:
 
         if self.config.mode == SandboxMode.DOCKER:
             return await self._execute_docker(code, context)
-        else:
-            return await self._execute_subprocess(code, context)
+        return await self._execute_subprocess(code, context)
 
     def _validate_code(self, code: str) -> str | None:
         """
@@ -277,7 +276,7 @@ class CodeSandbox:
                     process.communicate(),
                     timeout=self.config.timeout_seconds,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
                 await process.wait()
                 return SandboxResult(
@@ -377,7 +376,7 @@ class CodeSandbox:
                         timeout=self.config.timeout_seconds
                         + 5,  # Extra time for container overhead
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Kill the container
                     kill_process = await asyncio.create_subprocess_exec(
                         "docker",

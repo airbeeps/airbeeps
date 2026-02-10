@@ -22,7 +22,7 @@ from airbeeps.agents.schemas import (
     MCPServerToolsResponse,
     MCPToolInfo,
 )
-from airbeeps.agents.security.permissions import PermissionChecker, ToolSecurityLevel
+from airbeeps.agents.security.permissions import PermissionChecker
 from airbeeps.agents.service import MCPServerService
 from airbeeps.agents.tools.registry import tool_registry
 from airbeeps.auth import current_superuser

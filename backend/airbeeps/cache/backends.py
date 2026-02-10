@@ -3,7 +3,6 @@ Cache backend implementations: In-memory and Redis.
 """
 
 import asyncio
-import hashlib
 import json
 import logging
 import time
@@ -19,37 +18,30 @@ class CacheBackend(ABC):
     @abstractmethod
     async def get(self, key: str) -> Any | None:
         """Get a value from cache. Returns None if not found or expired."""
-        pass
 
     @abstractmethod
     async def set(self, key: str, value: Any, ttl: int | None = None) -> bool:
         """Set a value in cache with optional TTL (seconds). Returns True on success."""
-        pass
 
     @abstractmethod
     async def delete(self, key: str) -> bool:
         """Delete a key from cache. Returns True if key existed."""
-        pass
 
     @abstractmethod
     async def exists(self, key: str) -> bool:
         """Check if key exists in cache."""
-        pass
 
     @abstractmethod
     async def clear(self, pattern: str | None = None) -> int:
         """Clear cache. If pattern provided, only clear matching keys. Returns count of deleted keys."""
-        pass
 
     @abstractmethod
     async def close(self) -> None:
         """Close the cache connection."""
-        pass
 
     @abstractmethod
     async def health_check(self) -> bool:
         """Check if the cache backend is healthy."""
-        pass
 
     async def get_many(self, keys: list[str]) -> dict[str, Any]:
         """Get multiple values. Default implementation calls get() for each key."""

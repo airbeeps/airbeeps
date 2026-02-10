@@ -242,7 +242,6 @@ def should_continue_reflecting(state: dict[str, Any]) -> str:
 
     if next_action == "execute" and state.get("pending_tool_calls"):
         return "execute"
-    elif next_action == "plan":
+    if next_action == "plan":
         return "plan"
-    else:
-        return "respond"
+    return "respond"

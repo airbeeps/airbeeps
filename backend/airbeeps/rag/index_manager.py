@@ -12,9 +12,6 @@ from typing import Any
 from llama_index.core import StorageContext, VectorStoreIndex
 from llama_index.core.embeddings import BaseEmbedding
 from llama_index.core.schema import BaseNode, Document
-from llama_index.core.vector_stores.types import BasePydanticVectorStore
-
-from airbeeps.config import settings
 
 from .embeddings import EmbeddingService, get_embedding_service
 from .stores import VectorStoreFactory, VectorStoreType, get_vector_store
@@ -91,8 +88,10 @@ class IndexManager:
         )
 
         # Create storage context with persistent docstore
-        from llama_index.core.storage.docstore import SimpleDocumentStore
         from pathlib import Path
+
+        from llama_index.core.storage.docstore import SimpleDocumentStore
+
         from airbeeps.config import BASE_DIR, settings as app_settings
 
         # Use persistent docstore directory
@@ -301,6 +300,7 @@ class IndexManager:
             # Delete docstore file
             try:
                 from pathlib import Path
+
                 from airbeeps.config import BASE_DIR, settings as app_settings
 
                 docstore_dir = Path(app_settings.DATA_ROOT) / "docstore"
@@ -347,17 +347,17 @@ class IndexManager:
 
                 return await get_qdrant_collection_stats(collection_name)
 
-            elif store_type == VectorStoreType.CHROMADB:
+            if store_type == VectorStoreType.CHROMADB:
                 from .stores.chroma import get_chroma_collection_stats
 
                 return await get_chroma_collection_stats(collection_name)
 
-            elif store_type == VectorStoreType.PGVECTOR:
+            if store_type == VectorStoreType.PGVECTOR:
                 from .stores.pgvector import get_pgvector_collection_stats
 
                 return await get_pgvector_collection_stats(collection_name)
 
-            elif store_type == VectorStoreType.MILVUS:
+            if store_type == VectorStoreType.MILVUS:
                 from .stores.milvus import get_milvus_collection_stats
 
                 return await get_milvus_collection_stats(collection_name)
@@ -398,6 +398,7 @@ class IndexManager:
         """Persist docstore to disk for BM25/hybrid retrieval."""
         try:
             from pathlib import Path
+
             from airbeeps.config import BASE_DIR, settings as app_settings
 
             storage_context = self._storage_context_cache.get(str(kb_id))

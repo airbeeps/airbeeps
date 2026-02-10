@@ -123,8 +123,8 @@ class TestWebSearchTool:
     @pytest.fixture
     def tool_with_brave(self):
         """Create tool with Brave API key."""
-        from airbeeps.agents.tools.web_search import WebSearchTool
         from airbeeps.agents.tools.base import AgentToolConfig
+        from airbeeps.agents.tools.web_search import WebSearchTool
 
         config = AgentToolConfig(
             name="web_search",
@@ -135,8 +135,8 @@ class TestWebSearchTool:
     @pytest.fixture
     def tool_with_tavily(self):
         """Create tool with Tavily API key."""
-        from airbeeps.agents.tools.web_search import WebSearchTool
         from airbeeps.agents.tools.base import AgentToolConfig
+        from airbeeps.agents.tools.web_search import WebSearchTool
 
         config = AgentToolConfig(
             name="web_search",

@@ -11,8 +11,10 @@ Provides long-term memory capabilities for agents with:
 - Shared memory pools for collaboration
 """
 
-from airbeeps.agents.memory.api import admin_router as memory_admin_router
-from airbeeps.agents.memory.api import router as memory_router
+from airbeeps.agents.memory.api import (
+    admin_router as memory_admin_router,
+    router as memory_router,
+)
 from airbeeps.agents.memory.compaction import (
     MemoryCompactionService,
     create_compaction_service,

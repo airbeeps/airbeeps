@@ -121,20 +121,19 @@ class CodeExecutorTool(AgentTool):
             output_parts.append(f"\n[Execution time: {result.execution_time_ms}ms]")
 
             return "\n".join(output_parts)
-        else:
-            error_msg = "Execution failed"
+        error_msg = "Execution failed"
 
-            if result.was_timeout:
-                error_msg = "Execution timed out"
-            elif result.was_memory_limit:
-                error_msg = "Memory limit exceeded"
-            elif result.error_message:
-                error_msg = f"Error: {result.error_message}"
+        if result.was_timeout:
+            error_msg = "Execution timed out"
+        elif result.was_memory_limit:
+            error_msg = "Memory limit exceeded"
+        elif result.error_message:
+            error_msg = f"Error: {result.error_message}"
 
-            if result.stderr:
-                error_msg += f"\n\nStderr:\n{result.stderr}"
+        if result.stderr:
+            error_msg += f"\n\nStderr:\n{result.stderr}"
 
-            return error_msg
+        return error_msg
 
 
 # Note: DataAnalysisTool is defined in data_analysis.py

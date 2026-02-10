@@ -8,17 +8,18 @@ Creates the agent execution graph with:
 """
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
 
-from .state import AgentStateDict, BudgetConfig
-from .nodes.budget_checker import budget_checker_node, should_continue
-from .nodes.planner import planner_node, should_use_tool
+from .nodes.budget_checker import budget_checker_node
 from .nodes.executor import executor_node
-from .nodes.reflector import reflector_node, should_continue_reflecting
+from .nodes.planner import planner_node
+from .nodes.reflector import reflector_node
 from .nodes.responder import responder_node
+from .state import AgentStateDict, BudgetConfig
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +99,9 @@ async def create_agent_graph(
                 user_id=config.user_id,
                 embedding_model_id=config.embedding_model_id,
             )
-        else:
-            # Skip planning - go directly to respond
-            state["next_action"] = "respond"
-            return state
+        # Skip planning - go directly to respond
+        state["next_action"] = "respond"
+        return state
 
     async def exec_node(state: dict) -> dict:
         return await executor_node(
@@ -118,10 +118,9 @@ async def create_agent_graph(
                 quality_threshold=config.reflection_threshold,
                 max_retries=config.max_retries,
             )
-        else:
-            # Skip reflection - go to respond
-            state["next_action"] = "respond"
-            return state
+        # Skip reflection - go to respond
+        state["next_action"] = "respond"
+        return state
 
     async def respond_node(state: dict) -> dict:
         return await responder_node(state, llm=llm)
@@ -176,8 +175,7 @@ async def create_agent_graph(
     # Compile the graph
     if checkpointer:
         return graph.compile(checkpointer=checkpointer)
-    else:
-        return graph.compile()
+    return graph.compile()
 
 
 def _route_from_budget(state: dict) -> str:

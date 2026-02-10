@@ -158,26 +158,26 @@ class DataAnalysisTool(AgentTool):
             if operation == "describe":
                 return await self._describe(df)
 
-            elif operation == "filter":
+            if operation == "filter":
                 condition = params.get("condition")
                 if not condition:
                     return {"error": "Filter operation requires 'condition' parameter"}
                 return await self._filter(df, condition)
 
-            elif operation == "aggregate":
+            if operation == "aggregate":
                 group_by = params.get("group_by", [])
                 agg_func = params.get("agg_func", "sum")
                 agg_column = params.get("agg_column")
                 return await self._aggregate(df, group_by, agg_func, agg_column)
 
-            elif operation == "head":
+            if operation == "head":
                 n = params.get("n", 10)
                 return await self._head(df, n)
 
-            elif operation == "columns":
+            if operation == "columns":
                 return await self._columns(df)
 
-            elif operation == "value_counts":
+            if operation == "value_counts":
                 column = params.get("column")
                 if not column:
                     return {
@@ -185,14 +185,13 @@ class DataAnalysisTool(AgentTool):
                     }
                 return await self._value_counts(df, column)
 
-            elif operation == "query":
+            if operation == "query":
                 query_expr = params.get("query_expr")
                 if not query_expr:
                     return {"error": "Query operation requires 'query_expr' parameter"}
                 return await self._query(df, query_expr)
 
-            else:
-                return {"error": f"Unknown operation: {operation}"}
+            return {"error": f"Unknown operation: {operation}"}
 
         except Exception as e:
             logger.exception(f"Data analysis failed: {e}")

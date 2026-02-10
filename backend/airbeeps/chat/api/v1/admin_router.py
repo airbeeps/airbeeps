@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC
 
 import sqlalchemy
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -635,13 +636,13 @@ async def get_feedback_stats(
 ):
     """Get aggregated feedback statistics for admin dashboard."""
     from collections import Counter
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     from sqlalchemy import func
 
     from airbeeps.feedback.models import MessageFeedback, MessageFeedbackRatingEnum
 
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.now(UTC) - timedelta(days=days)
 
     # Get all feedback in period
     query = select(MessageFeedback).where(MessageFeedback.created_at >= since)

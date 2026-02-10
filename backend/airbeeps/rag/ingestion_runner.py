@@ -26,8 +26,8 @@ from airbeeps.files.service import FileService
 
 from .cleaners import apply_cleaners
 from .doc_processor import DocumentProcessor, get_document_processor
-from .embeddings import EmbeddingService, get_embedding_service
-from .index_manager import IndexManager, get_index_manager
+from .embeddings import get_embedding_service
+from .index_manager import get_index_manager
 from .models import (
     Document,
     DocumentChunk,
@@ -36,7 +36,6 @@ from .models import (
     IngestionProfile,
     KnowledgeBase,
 )
-from .stores.base import collection_name_for_kb
 
 logger = logging.getLogger(__name__)
 

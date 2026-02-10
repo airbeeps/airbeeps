@@ -48,6 +48,7 @@ def create_qdrant_store(
     if use_local:
         # Use local file-based storage
         from pathlib import Path
+
         from airbeeps.config import BASE_DIR, settings as app_settings
 
         persist_dir = Path(app_settings.DATA_ROOT) / settings.QDRANT_PERSIST_DIR
@@ -113,6 +114,7 @@ async def delete_qdrant_collection(collection_name: str) -> bool:
     """Delete a Qdrant collection."""
     try:
         from pathlib import Path
+
         from airbeeps.config import BASE_DIR, settings as app_settings
 
         url = settings.QDRANT_URL
@@ -143,6 +145,7 @@ async def get_qdrant_collection_stats(collection_name: str) -> dict[str, Any]:
     """Get statistics for a Qdrant collection."""
     try:
         from pathlib import Path
+
         from airbeeps.config import BASE_DIR, settings as app_settings
 
         url = settings.QDRANT_URL

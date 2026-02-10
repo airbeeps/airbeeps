@@ -6,8 +6,6 @@ Tests for AgentState, BudgetConfig, ToolCallRecord, and cost estimation function
 
 from datetime import datetime
 
-import pytest
-
 
 class TestBudgetConfig:
     """Tests for BudgetConfig dataclass."""

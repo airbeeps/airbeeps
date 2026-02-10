@@ -7,7 +7,7 @@ All tests use mocked dependencies to avoid real LLM/database calls.
 
 import uuid
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -314,7 +314,6 @@ class TestCompactionStrategySelection:
     def test_age_compaction_cutoff_date(self):
         """Should calculate correct cutoff date."""
         # This tests the internal logic indirectly through the service
-        from datetime import datetime, timedelta
 
         days_old = 30
         cutoff = datetime.utcnow() - timedelta(days=days_old)

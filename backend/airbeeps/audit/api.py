@@ -8,14 +8,14 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from airbeeps.audit.models import AuditAction, AuditLog
 from airbeeps.audit.service import AuditService
+from airbeeps.auth import current_active_user
 from airbeeps.database import get_async_session
 from airbeeps.users.models import User
-from airbeeps.auth import current_active_user
 
 logger = logging.getLogger(__name__)
 

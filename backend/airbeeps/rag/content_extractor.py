@@ -57,12 +57,11 @@ def parse_page_range(page_range: str, total_pages: int) -> list[int]:
                 end = min(total_pages - 1, end - 1)
                 for i in range(start, end + 1):
                     pages.add(i)
-        else:
-            # Single page like "8"
-            if part.isdigit():
-                page_num = int(part) - 1  # Convert to 0-indexed
-                if 0 <= page_num < total_pages:
-                    pages.add(page_num)
+        # Single page like "8"
+        elif part.isdigit():
+            page_num = int(part) - 1  # Convert to 0-indexed
+            if 0 <= page_num < total_pages:
+                pages.add(page_num)
 
     return sorted(pages)
 

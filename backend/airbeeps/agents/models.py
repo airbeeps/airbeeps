@@ -9,14 +9,14 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi_users_db_sqlalchemy.generics import GUID
 from sqlalchemy import (
-    DateTime,
-    Float,
-    Integer,
     JSON,
     Boolean,
     Column,
+    DateTime,
     Enum as SQLEnum,
+    Float,
     ForeignKey,
+    Integer,
     String,
     Table,
     Text,

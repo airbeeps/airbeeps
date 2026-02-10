@@ -5,7 +5,7 @@ Tests for tracing instrumentation and PII redaction.
 Note: These tests mock OpenTelemetry to avoid real span creation.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -112,8 +112,8 @@ class TestTracingDecorators:
         """Should be able to import tracing decorators."""
         from airbeeps.agents.tracing.instrumentation import (
             trace_agent_execution,
-            trace_tool_call,
             trace_llm_call,
+            trace_tool_call,
         )
 
         assert callable(trace_agent_execution)

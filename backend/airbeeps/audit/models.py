@@ -3,14 +3,13 @@ Audit log models for tracking admin operations.
 """
 
 import uuid
-from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import DateTime, Enum as SQLEnum, String, Text, func
+from fastapi_users_db_sqlalchemy.generics import GUID
+from sqlalchemy import Enum as SQLEnum, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
-from fastapi_users_db_sqlalchemy.generics import GUID
 
 from airbeeps.models import Base
 

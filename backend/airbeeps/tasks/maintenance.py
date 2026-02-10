@@ -6,7 +6,7 @@ These tasks run periodically via Celery Beat.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -109,15 +109,15 @@ except ImportError:
 
 async def _cleanup_traces_async() -> dict:
     """Clean up old agent traces."""
-    from airbeeps.database import get_async_session_context
-    from airbeeps.agents.tracing.storage import AgentTrace
-    from airbeeps.config import settings
-    from sqlalchemy import delete
     from datetime import timedelta
 
-    cutoff = datetime.now(timezone.utc) - timedelta(
-        days=settings.TRACING_RETENTION_DAYS
-    )
+    from sqlalchemy import delete
+
+    from airbeeps.agents.tracing.storage import AgentTrace
+    from airbeeps.config import settings
+    from airbeeps.database import get_async_session_context
+
+    cutoff = datetime.now(UTC) - timedelta(days=settings.TRACING_RETENTION_DAYS)
 
     async with get_async_session_context() as session:
         stmt = delete(AgentTrace).where(AgentTrace.created_at < cutoff)
@@ -132,11 +132,12 @@ async def _cleanup_traces_async() -> dict:
 
 async def _cleanup_sessions_async() -> dict:
     """Clean up expired refresh tokens."""
-    from airbeeps.database import get_async_session_context
-    from airbeeps.auth.refresh_token_models import RefreshToken
     from sqlalchemy import delete
 
-    now = datetime.now(timezone.utc)
+    from airbeeps.auth.refresh_token_models import RefreshToken
+    from airbeeps.database import get_async_session_context
+
+    now = datetime.now(UTC)
 
     async with get_async_session_context() as session:
         stmt = delete(RefreshToken).where(RefreshToken.expires_at < now)
@@ -155,7 +156,7 @@ async def _update_analytics_async() -> dict:
     # For now, return a stub
     return {
         "status": "ok",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
     }
 
 
@@ -168,7 +169,7 @@ async def _health_report_async() -> dict:
         health = await service.check_all()
 
         report = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "status": "healthy"
             if all(c.get("healthy") for c in health.values())
             else "degraded",

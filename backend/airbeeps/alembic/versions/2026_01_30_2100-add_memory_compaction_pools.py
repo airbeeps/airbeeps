@@ -12,11 +12,9 @@ Phase 3: Memory Compaction and Shared Pools
 - Compaction logs
 """
 
-from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 import fastapi_users_db_sqlalchemy.generics
-
+import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "ph4s3_m3m0ry"

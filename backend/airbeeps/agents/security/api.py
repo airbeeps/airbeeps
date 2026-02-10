@@ -390,7 +390,9 @@ async def get_approval_stats(
 ) -> ApprovalStats:
     """Get approval statistics (admin only)."""
     from datetime import timedelta
-    from sqlalchemy import select, func
+
+    from sqlalchemy import select
+
     from airbeeps.agents.models import ToolApprovalRequest
 
     cutoff_date = datetime.utcnow() - timedelta(days=days)

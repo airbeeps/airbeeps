@@ -119,12 +119,11 @@ class PIIRedactor:
 
         if isinstance(value, str):
             return self.redact(value)
-        elif isinstance(value, dict):
+        if isinstance(value, dict):
             return self.redact_dict(value)
-        elif isinstance(value, list):
+        if isinstance(value, list):
             return [self.redact_value(item) for item in value]
-        else:
-            return value
+        return value
 
 
 # Global redactor instance

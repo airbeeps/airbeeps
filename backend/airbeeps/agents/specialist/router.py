@@ -6,10 +6,8 @@ intent classification using keywords and LLM analysis.
 """
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID
 
 from .types import SpecialistType, classify_intent_keywords, get_specialist_config
 
@@ -229,9 +227,9 @@ class AgentRouter:
 
         if "NEED_RESEARCH" in upper_response:
             return SpecialistType.RESEARCH
-        elif "NEED_CODE" in upper_response:
+        if "NEED_CODE" in upper_response:
             return SpecialistType.CODE
-        elif "NEED_DATA" in upper_response:
+        if "NEED_DATA" in upper_response:
             return SpecialistType.DATA
 
         return None

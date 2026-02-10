@@ -9,11 +9,9 @@ Phase 3: Tool Approval Workflows
 - Approval policies
 """
 
-from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 import fastapi_users_db_sqlalchemy.generics
-
+import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "t00l_4ppr0v4l"

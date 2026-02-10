@@ -4,11 +4,9 @@ Integration tests for parallel tool execution.
 Tests concurrency limits, timeouts, retries, and error handling.
 """
 
-import pytest
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
 
+import pytest
 
 # ============================================================================
 # Fixtures
@@ -328,8 +326,9 @@ class TestPerformance:
     @pytest.mark.asyncio
     async def test_parallel_faster_than_sequential(self):
         """Test that parallel execution is faster than sequential."""
-        from airbeeps.agents.graph.nodes.executor import ParallelExecutor
         import time
+
+        from airbeeps.agents.graph.nodes.executor import ParallelExecutor
 
         async def slow_executor(name: str, input_data: dict) -> str:
             await asyncio.sleep(0.1)

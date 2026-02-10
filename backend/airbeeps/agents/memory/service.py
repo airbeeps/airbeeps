@@ -15,7 +15,6 @@ from typing import Any
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from airbeeps.agents.memory.encryption import MemoryEncryption, get_memory_encryption
 from airbeeps.agents.memory.models import (
@@ -26,7 +25,6 @@ from airbeeps.agents.memory.models import (
     RetentionPolicy,
     UserMemoryConsent,
 )
-from airbeeps.database import async_session_maker
 from airbeeps.rag.embeddings import EmbeddingService, get_embedding_service
 
 logger = logging.getLogger(__name__)

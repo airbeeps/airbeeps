@@ -33,7 +33,7 @@ def _iter_frontend_relpaths(files: Sequence[str]) -> list[str]:
 
 
 def _run(cmd: list[str]) -> int:
-    completed = subprocess.run(cmd, cwd=str(REPO_ROOT), check=False, shell=True)  # noqa: S603
+    completed = subprocess.run(cmd, cwd=str(REPO_ROOT), check=False, shell=True)
     return completed.returncode
 
 

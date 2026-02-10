@@ -198,8 +198,7 @@ class TestMultiHopRetriever:
                 return MagicMock(
                     text="NEED_MORE: YES\nREASON: Need more\nFOLLOW_UP: More details"
                 )
-            else:
-                return MagicMock(text="NEED_MORE: NO")
+            return MagicMock(text="NEED_MORE: NO")
 
         mock_llm.acomplete = mock_acomplete
 

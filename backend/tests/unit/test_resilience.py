@@ -6,11 +6,8 @@ All tests use mocked dependencies to avoid real external calls.
 """
 
 import asyncio
-import time
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ============================================================================
 # Circuit Breaker Tests
@@ -293,8 +290,8 @@ class TestShouldRetry:
     def test_retries_retryable_error(self):
         """Should retry RetryableError."""
         from airbeeps.agents.resilience.retry import (
-            RetryConfig,
             RetryableError,
+            RetryConfig,
             _should_retry,
         )
 
@@ -487,8 +484,8 @@ class TestHealthChecker:
     async def test_healthy_check(self):
         """Should return healthy for successful check."""
         from airbeeps.agents.resilience.health import (
-            HealthChecker,
             HealthCheckConfig,
+            HealthChecker,
             HealthStatus,
         )
 
@@ -506,8 +503,8 @@ class TestHealthChecker:
     async def test_unhealthy_on_exception(self):
         """Should return unhealthy on exception."""
         from airbeeps.agents.resilience.health import (
-            HealthChecker,
             HealthCheckConfig,
+            HealthChecker,
             HealthStatus,
         )
 
@@ -526,8 +523,8 @@ class TestHealthChecker:
     async def test_unhealthy_on_timeout(self):
         """Should return unhealthy on timeout."""
         from airbeeps.agents.resilience.health import (
-            HealthChecker,
             HealthCheckConfig,
+            HealthChecker,
             HealthStatus,
         )
 
@@ -545,7 +542,7 @@ class TestHealthChecker:
     @pytest.mark.asyncio
     async def test_caching(self):
         """Should cache results within TTL."""
-        from airbeeps.agents.resilience.health import HealthChecker, HealthCheckConfig
+        from airbeeps.agents.resilience.health import HealthCheckConfig, HealthChecker
 
         call_count = 0
 
@@ -566,7 +563,7 @@ class TestHealthChecker:
     @pytest.mark.asyncio
     async def test_force_bypasses_cache(self):
         """Should bypass cache when force=True."""
-        from airbeeps.agents.resilience.health import HealthChecker, HealthCheckConfig
+        from airbeeps.agents.resilience.health import HealthCheckConfig, HealthChecker
 
         call_count = 0
 

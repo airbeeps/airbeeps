@@ -28,7 +28,7 @@ from .descriptions import (
 )
 from .mcp.registry import mcp_registry
 from .mcp.tools_adapter import MCPToolAdapter
-from .security import ContentFilter, PermissionChecker, InputValidator, OutputValidator
+from .security import ContentFilter, InputValidator, OutputValidator, PermissionChecker
 from .tools.base import AgentToolConfig
 from .tools.knowledge_base import KnowledgeBaseTool
 from .tools.registry import tool_registry

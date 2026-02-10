@@ -2,17 +2,13 @@
 Test configuration loading with YAML support
 """
 
-import os
-import tempfile
-from pathlib import Path
-
 import pytest
 import yaml
 
 
 def test_yaml_config_loading():
     """Test that YAML configuration is loaded and merged correctly"""
-    from airbeeps.config import _deep_merge, _flatten_dict, _load_yaml_config
+    from airbeeps.config import _deep_merge
 
     # Test deep merge
     base = {"a": 1, "b": {"c": 2, "d": 3}}

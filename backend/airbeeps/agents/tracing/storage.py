@@ -5,14 +5,14 @@ Stores OpenTelemetry spans in the database instead of external backends.
 This provides full observability without third-party dependencies.
 """
 
-import json
 import logging
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any
 from uuid import UUID, uuid4
 
-from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -29,7 +29,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from airbeeps.models import Base
 
@@ -150,7 +150,6 @@ class LocalTraceExporter(SpanExporter):
 
     def shutdown(self) -> None:
         """Shutdown the exporter"""
-        pass
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """Force flush pending spans"""

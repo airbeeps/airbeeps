@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from io import BytesIO
 from typing import Any
 
@@ -440,7 +440,7 @@ async def preview_rag_pipeline(
         logger.error(f"Pipeline preview failed for KB {kb_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Pipeline preview failed: {str(e)}",
+            detail=f"Pipeline preview failed: {e!s}",
         )
 
 
@@ -524,10 +524,6 @@ async def get_kb_health_metrics(
     logger.info(f"Getting health metrics for KB {kb_id}")
 
     try:
-        from datetime import timezone
-
-        from sqlalchemy.orm import selectinload
-
         from airbeeps.rag.index_manager import get_index_manager
         from airbeeps.rag.models import DocumentChunk
 
@@ -624,7 +620,7 @@ async def get_kb_health_metrics(
         duplicate_count = dup_count_result.scalar() or 0
 
         # Staleness metrics
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         age_query = select(
             func.min(Document.created_at).label("oldest"),
@@ -647,9 +643,9 @@ async def get_kb_health_metrics(
         avg_age_days = None
 
         if age_row.oldest:
-            oldest_days = (now - age_row.oldest.replace(tzinfo=timezone.utc)).days
+            oldest_days = (now - age_row.oldest.replace(tzinfo=UTC)).days
         if age_row.newest:
-            newest_days = (now - age_row.newest.replace(tzinfo=timezone.utc)).days
+            newest_days = (now - age_row.newest.replace(tzinfo=UTC)).days
         avg_age_days = (
             float(age_row.avg_age_days or 0) if age_row.avg_age_days else None
         )
@@ -1290,7 +1286,6 @@ async def detect_duplicate_documents(
 
         # Find documents with duplicate file hashes
         # First, get all file hashes that appear more than once
-        from sqlalchemy import literal_column
 
         duplicate_hashes_query = (
             select(
@@ -2260,7 +2255,6 @@ async def reindex_document_from_chunks(
 
         from airbeeps.rag.embeddings import get_embedding_service
         from airbeeps.rag.index_manager import get_index_manager
-        from airbeeps.rag.models import DocumentChunk
 
         # Load document with chunks
         result = await session.execute(
@@ -2564,8 +2558,7 @@ async def evaluate_rag(
     """Evaluate RAG quality for a knowledge base"""
     logger.info(f"RAG evaluation for KB {kb_id} with {len(request.samples)} samples")
     try:
-        from airbeeps.rag.evaluator import EvaluationSample as EvalSample
-        from airbeeps.rag.evaluator import get_evaluator
+        from airbeeps.rag.evaluator import EvaluationSample as EvalSample, get_evaluator
 
         # Convert request samples to evaluator format
         samples = [
@@ -2595,7 +2588,7 @@ async def evaluate_rag(
         logger.error(f"RAG evaluation failed for KB {kb_id}: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Evaluation failed: {str(e)}",
+            detail=f"Evaluation failed: {e!s}",
         )
 
 

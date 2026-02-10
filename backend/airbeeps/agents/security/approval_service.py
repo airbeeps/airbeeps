@@ -9,13 +9,13 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, and_, or_
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from airbeeps.agents.models import (
     ApprovalStatusEnum,
-    ToolApprovalRequest,
     ToolApprovalPolicy,
+    ToolApprovalRequest,
 )
 
 logger = logging.getLogger(__name__)

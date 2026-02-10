@@ -23,7 +23,7 @@ import logging
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import IntEnum
 from typing import Any
 
@@ -273,14 +273,14 @@ class InProcessJobQueue(JobQueueBackend):
                         )
                         self._running_tasks[queued_job.job_id] = task
                         self._stats.currently_running = len(self._running_tasks)
-                        self._stats.last_job_started = datetime.now(timezone.utc)
+                        self._stats.last_job_started = datetime.now(UTC)
                         continue
 
                 # Wait for new jobs or running jobs to complete
                 self._queue_event.clear()
                 try:
                     await asyncio.wait_for(self._queue_event.wait(), timeout=1.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
 
             except Exception as e:
@@ -308,7 +308,7 @@ class InProcessJobQueue(JobQueueBackend):
             # Create queued job with negative priority for min-heap
             queued_job = QueuedJob(
                 priority=-priority,  # Negate for min-heap (higher priority = lower value)
-                enqueued_at=datetime.now(timezone.utc),
+                enqueued_at=datetime.now(UTC),
                 job_id=job_id,
                 retry_count=self._retry_counts.get(job_id, 0),
             )
@@ -331,7 +331,7 @@ class InProcessJobQueue(JobQueueBackend):
         from .ingestion_runner import IngestionRunner
 
         job_id = queued_job.job_id
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
         success = False
 
         try:
@@ -342,6 +342,7 @@ class InProcessJobQueue(JobQueueBackend):
 
             # Check if job actually succeeded (runner doesn't raise on failure)
             from airbeeps.database import get_async_session_context
+
             from .models import IngestionJob
 
             async with get_async_session_context() as session:
@@ -360,7 +361,7 @@ class InProcessJobQueue(JobQueueBackend):
 
         finally:
             # Calculate execution time
-            end_time = datetime.now(timezone.utc)
+            end_time = datetime.now(UTC)
             execution_ms = (end_time - start_time).total_seconds() * 1000
 
             async with self._lock:

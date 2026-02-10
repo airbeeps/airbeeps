@@ -32,18 +32,26 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from .agents.api.v1.admin_router import router as agents_admin_router_v1
-from .agents.api.v1.admin_router import tools_router as tools_admin_router_v1
+from .agents.api.v1.admin_router import (
+    router as agents_admin_router_v1,
+    tools_router as tools_admin_router_v1,
+)
 from .agents.memory import memory_admin_router, memory_router
 from .agents.resilience.api import router as health_router
-from .agents.specialist.api import router as multiagent_router
-from .agents.specialist.api import admin_router as multiagent_admin_router
+from .agents.specialist.api import (
+    admin_router as multiagent_admin_router,
+    router as multiagent_router,
+)
 from .agents.tracing.api import router as tracing_router
-from .audit.api import router as audit_router
+from .ai_models.analytics import (
+    admin_router as analytics_admin_router,
+    router as analytics_router,
+)
 from .ai_models.api.v1.admin_router import router as models_admin_router_v1
 from .ai_models.api.v1.user_router import router as models_user_router_v1
 from .assistants.api.v1.admin_router import router as assistants_admin_router_v1
 from .assistants.api.v1.user_router import router as assistants_user_router_v1
+from .audit.api import router as audit_router
 from .auth import current_active_user, current_superuser
 from .auth.api.v1.oauth_admin_router import router as oauth_admin_router_v1
 from .auth.api.v1.oauth_user_router import router as oauth_user_router
@@ -61,8 +69,6 @@ from .system_config.api.v1.admin_router import router as configs_admin_router_v1
 from .system_config.api.v1.user_router import router as configs_user_router_v1
 from .users.api.v1.admin_router import router as users_admin_router_v1
 from .users.api.v1.user_router import router as users_user_router_v1
-from .ai_models.analytics import router as analytics_router
-from .ai_models.analytics import admin_router as analytics_admin_router
 
 # Request-scoped ID
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar(
@@ -227,12 +233,12 @@ app = FastAPI(**app_config)
 # ============================================================================
 if settings.TRACING_ENABLED:
     from .agents.tracing.config import (
-        TracingConfig,
         TracingBackend,
+        TracingConfig,
         setup_global_tracing,
     )
-    from .agents.tracing.pii_redactor import PIIRedactor, set_redactor
     from .agents.tracing.metrics import setup_metrics
+    from .agents.tracing.pii_redactor import PIIRedactor, set_redactor
 
     # Setup PII redactor
     redactor = PIIRedactor(enabled=settings.TRACING_REDACT_PII)
@@ -329,7 +335,7 @@ async def log_exceptions(request: Request, call_next):
         # For database errors, log a concise message
         if "sqlalchemy" in str(type(e).__module__).lower():
             logger.error(
-                f"Database error in {request.method} {request.url.path}: {type(e).__name__}: {str(e)}"
+                f"Database error in {request.method} {request.url.path}: {type(e).__name__}: {e!s}"
             )
         else:
             # For other exceptions, log full trace

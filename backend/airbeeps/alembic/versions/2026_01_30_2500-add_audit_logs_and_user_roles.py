@@ -9,11 +9,10 @@ Phase 5: Audit Logging and Role Management
 - User role field for RBAC foundation
 """
 
-from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 import fastapi_users_db_sqlalchemy.generics
-
+import sqlalchemy as sa
+from alembic import op
+from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision = "4ud1t_l0g5_r0l35"

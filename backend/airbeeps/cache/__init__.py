@@ -12,14 +12,14 @@ Usage:
     value = await cache.get("key")
 """
 
-from .service import CacheService, get_cache, cache_key
 from .backends import CacheBackend, InMemoryCache, RedisCache
+from .service import CacheService, cache_key, get_cache
 
 __all__ = [
-    "CacheService",
     "CacheBackend",
+    "CacheService",
     "InMemoryCache",
     "RedisCache",
-    "get_cache",
     "cache_key",
+    "get_cache",
 ]

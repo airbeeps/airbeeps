@@ -12,11 +12,12 @@ Features:
 import asyncio
 import logging
 import mimetypes
+from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, TypeVar
+from typing import Any, BinaryIO, TypeVar
 from uuid import UUID
 
 import aioboto3
@@ -73,7 +74,7 @@ def with_retry(
                             f"retrying in {wait_time:.1f}s (attempt {attempt + 1}/{attempts})"
                         )
                         await asyncio.sleep(wait_time)
-                except Exception as e:
+                except Exception:
                     # For non-ClientError exceptions, don't retry
                     raise
 

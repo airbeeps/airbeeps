@@ -6,7 +6,6 @@ Provides management of shared memory pools for collaborative knowledge.
 
 import logging
 import uuid
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -22,7 +21,6 @@ from airbeeps.agents.memory.models import (
     SharedPoolMember,
     SharedPoolMemory,
 )
-from airbeeps.agents.memory.service import MemoryService
 
 logger = logging.getLogger(__name__)
 

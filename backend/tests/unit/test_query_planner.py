@@ -181,8 +181,8 @@ class TestQueryPlanner:
     @pytest.mark.asyncio
     async def test_execute_plan_parallel_execution(self, planner_with_llm, mock_llm):
         """Should execute sub-queries in parallel."""
-        import uuid
         import asyncio
+        import uuid
 
         execution_order = []
 

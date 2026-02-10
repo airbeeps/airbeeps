@@ -24,8 +24,6 @@ class UserCreate(schemas.CreateUpdateDictModel):
 class UserRegisterRequest(UserCreate):
     """Schema for user registration requests. Extends UserCreate for API endpoint clarity."""
 
-    pass
-
 
 class ChangePasswordRequest(schemas.CreateUpdateDictModel):
     old_password: str

@@ -29,9 +29,9 @@ def create_chroma_store(
     Returns:
         Configured ChromaVectorStore
     """
-    from llama_index.vector_stores.chroma import ChromaVectorStore
     import chromadb
     from chromadb.config import Settings as ChromaSettings
+    from llama_index.vector_stores.chroma import ChromaVectorStore
 
     # Determine connection mode
     host = kwargs.get("host", settings.CHROMA_SERVER_HOST)

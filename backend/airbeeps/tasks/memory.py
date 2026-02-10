@@ -9,6 +9,7 @@ These tasks handle background memory operations:
 
 import asyncio
 import logging
+from datetime import UTC
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,7 @@ async def _compact_memories_async(
 ) -> dict:
     """Async implementation of memory compaction."""
     from uuid import UUID
+
     from airbeeps.agents.memory.compaction import MemoryCompactionService
     from airbeeps.database import get_async_session_context
 
@@ -153,13 +155,15 @@ async def _compact_memories_async(
 
 async def _cleanup_memories_async() -> dict:
     """Async implementation of memory cleanup."""
-    from airbeeps.database import get_async_session_context
+    from datetime import datetime
+
+    from sqlalchemy import delete
+
     from airbeeps.agents.memory.models import AgentMemory
-    from sqlalchemy import select, delete
-    from datetime import datetime, timezone
+    from airbeeps.database import get_async_session_context
 
     async with get_async_session_context() as session:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Find and delete expired memories
         stmt = (
@@ -181,14 +185,16 @@ async def _cleanup_memories_async() -> dict:
 async def _export_memories_async(user_id: str, format: str) -> str:
     """Async implementation of memory export."""
     import json
-    from uuid import UUID
+    from datetime import datetime
     from pathlib import Path
-    from datetime import datetime, timezone
-    from airbeeps.database import get_async_session_context
-    from airbeeps.agents.memory.models import AgentMemory
-    from airbeeps.agents.memory.encryption import MemoryEncryption
-    from airbeeps.config import settings
+    from uuid import UUID
+
     from sqlalchemy import select
+
+    from airbeeps.agents.memory.encryption import MemoryEncryption
+    from airbeeps.agents.memory.models import AgentMemory
+    from airbeeps.config import settings
+    from airbeeps.database import get_async_session_context
 
     user_uuid = UUID(user_id)
 
@@ -226,7 +232,7 @@ async def _export_memories_async(user_id: str, format: str) -> str:
             )
 
         # Write to file
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
         export_dir = Path(settings.LOCAL_STORAGE_ROOT) / "exports"
         export_dir.mkdir(parents=True, exist_ok=True)
 

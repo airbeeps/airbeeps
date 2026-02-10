@@ -166,12 +166,11 @@ class DocumentProcessor:
         # Process based on configuration
         if use_hierarchical:
             return self._process_hierarchical([document], chunk_size=chunk_size)
-        elif use_semantic and self.embed_model is not None:
+        if use_semantic and self.embed_model is not None:
             return self._process_semantic([document])
-        else:
-            return self._process_sentence(
-                [document], chunk_size=chunk_size, chunk_overlap=chunk_overlap
-            )
+        return self._process_sentence(
+            [document], chunk_size=chunk_size, chunk_overlap=chunk_overlap
+        )
 
     def process_documents(
         self,
@@ -206,10 +205,9 @@ class DocumentProcessor:
 
         if use_hierarchical:
             return self._process_hierarchical(documents)
-        elif use_semantic and self.embed_model is not None:
+        if use_semantic and self.embed_model is not None:
             return self._process_semantic(documents)
-        else:
-            return self._process_sentence(documents)
+        return self._process_sentence(documents)
 
     def _process_hierarchical(
         self,

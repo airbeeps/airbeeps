@@ -12,11 +12,11 @@ import functools
 import json
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
-from typing import Any, Callable, ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar
 
-from opentelemetry import trace
-from opentelemetry.trace import Status, StatusCode, SpanKind
+from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from airbeeps.agents.tracing.config import get_tracer
 from airbeeps.agents.tracing.pii_redactor import get_redactor

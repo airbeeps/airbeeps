@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from .router import AgentRouter, RoutingDecision
+from .router import AgentRouter
 from .types import SpecialistType, get_specialist_config
 
 logger = logging.getLogger(__name__)
@@ -270,7 +270,7 @@ class MultiAgentOrchestrator:
 
             except Exception as e:
                 logger.error(f"Specialist execution failed: {e}")
-                step_output = f"Error during execution: {str(e)}"
+                step_output = f"Error during execution: {e!s}"
                 step_iterations = 0
                 step_cost = 0.0
                 step_duration = (time.time() - step_start) * 1000

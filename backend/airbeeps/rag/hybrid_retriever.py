@@ -6,7 +6,6 @@ Reciprocal Rank Fusion (RRF) for improved recall.
 """
 
 import logging
-from typing import Any
 
 from llama_index.core import StorageContext, VectorStoreIndex
 from llama_index.core.retrievers import BaseRetriever

@@ -4,10 +4,9 @@ Integration tests for MCP (Model Context Protocol) integration.
 Tests MCP client, server registry, and tool adapters.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
 
+import pytest
 
 # ============================================================================
 # Fixtures
@@ -273,6 +272,7 @@ class TestMCPErrorHandling:
     async def test_timeout_handling(self, mock_mcp_tool):
         """Test handling of timeout errors."""
         import asyncio
+
         from airbeeps.agents.mcp.tools_adapter import MCPToolAdapter
 
         async def slow_call(*args, **kwargs):

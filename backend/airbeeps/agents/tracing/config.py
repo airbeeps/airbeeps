@@ -11,19 +11,15 @@ Supports multiple backends:
 
 import logging
 from enum import Enum
-from typing import TYPE_CHECKING
 
 from opentelemetry import trace
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
     ConsoleSpanExporter,
     SimpleSpanProcessor,
 )
-from opentelemetry.sdk.resources import Resource, SERVICE_NAME
-
-if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +98,7 @@ class TracingConfig:
             logger.info("Tracing disabled")
             return None
 
-        elif self.backend == TracingBackend.OTLP:
+        if self.backend == TracingBackend.OTLP:
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
                 OTLPSpanExporter,
             )
@@ -114,7 +110,7 @@ class TracingConfig:
             logger.info(f"Exporting traces to OTLP endpoint: {self.endpoint}")
             return OTLPSpanExporter(endpoint=self.endpoint)
 
-        elif self.backend == TracingBackend.JAEGER:
+        if self.backend == TracingBackend.JAEGER:
             try:
                 from opentelemetry.exporter.jaeger.thrift import JaegerExporter
 

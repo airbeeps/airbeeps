@@ -4,10 +4,10 @@ End-to-end tests for complete agent workflows.
 Tests complete user scenarios from input to output.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import pytest
 
 # ============================================================================
 # Fixtures

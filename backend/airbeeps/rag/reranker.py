@@ -314,13 +314,12 @@ class EnsembleReranker(BaseNodePostprocessor):
         # Fuse rankings
         if self.fusion_method == "rrf":
             return self._rrf_fusion(rankings)
-        elif self.fusion_method == "weighted_average":
+        if self.fusion_method == "weighted_average":
             return self._weighted_average_fusion(rankings)
-        elif self.fusion_method == "max":
+        if self.fusion_method == "max":
             return self._max_fusion(rankings)
-        else:
-            logger.warning(f"Unknown fusion method: {self.fusion_method}, using RRF")
-            return self._rrf_fusion(rankings)
+        logger.warning(f"Unknown fusion method: {self.fusion_method}, using RRF")
+        return self._rrf_fusion(rankings)
 
     def _rrf_fusion(self, rankings: list[list[NodeWithScore]]) -> list[NodeWithScore]:
         """Reciprocal Rank Fusion."""

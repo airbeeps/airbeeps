@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from airbeeps.agents.memory.encryption import MemoryEncryption, get_memory_encryption

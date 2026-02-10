@@ -4,7 +4,7 @@ Unit tests for DataAnalysisTool.
 Tests for data analysis with mocked database and file service.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -26,8 +26,8 @@ class TestDataAnalysisTool:
 
     def test_tool_properties(self, mock_session):
         """Should have correct tool properties."""
-        from airbeeps.agents.tools.data_analysis import DataAnalysisTool
         from airbeeps.agents.tools.base import AgentToolConfig, ToolSecurityLevel
+        from airbeeps.agents.tools.data_analysis import DataAnalysisTool
 
         config = AgentToolConfig(name="analyze_data", parameters={})
         tool = DataAnalysisTool(config=config, session=mock_session)
@@ -41,8 +41,8 @@ class TestDataAnalysisTool:
 
     def test_get_input_schema(self, mock_session):
         """Should return valid input schema."""
-        from airbeeps.agents.tools.data_analysis import DataAnalysisTool
         from airbeeps.agents.tools.base import AgentToolConfig
+        from airbeeps.agents.tools.data_analysis import DataAnalysisTool
 
         config = AgentToolConfig(name="analyze_data", parameters={})
         tool = DataAnalysisTool(config=config, session=mock_session)
@@ -54,8 +54,8 @@ class TestDataAnalysisTool:
 
     def test_is_safe_condition_valid(self, mock_session):
         """Should accept safe filter conditions."""
-        from airbeeps.agents.tools.data_analysis import DataAnalysisTool
         from airbeeps.agents.tools.base import AgentToolConfig
+        from airbeeps.agents.tools.data_analysis import DataAnalysisTool
 
         config = AgentToolConfig(name="analyze_data", parameters={})
         tool = DataAnalysisTool(config=config, session=mock_session)
@@ -66,8 +66,8 @@ class TestDataAnalysisTool:
 
     def test_is_safe_condition_dangerous(self, mock_session):
         """Should reject dangerous filter conditions."""
-        from airbeeps.agents.tools.data_analysis import DataAnalysisTool
         from airbeeps.agents.tools.base import AgentToolConfig
+        from airbeeps.agents.tools.data_analysis import DataAnalysisTool
 
         config = AgentToolConfig(name="analyze_data", parameters={})
         tool = DataAnalysisTool(config=config, session=mock_session)
@@ -96,8 +96,8 @@ class TestListTabularDocumentsTool:
 
     def test_tool_properties(self, mock_session):
         """Should have correct tool properties."""
-        from airbeeps.agents.tools.data_analysis import ListTabularDocumentsTool
         from airbeeps.agents.tools.base import AgentToolConfig, ToolSecurityLevel
+        from airbeeps.agents.tools.data_analysis import ListTabularDocumentsTool
 
         config = AgentToolConfig(name="list_tabular_documents", parameters={})
         tool = ListTabularDocumentsTool(config=config, session=mock_session)
@@ -108,8 +108,8 @@ class TestListTabularDocumentsTool:
     @pytest.mark.asyncio
     async def test_execute_empty_list(self, mock_session):
         """Should handle empty document list or no KB configuration."""
-        from airbeeps.agents.tools.data_analysis import ListTabularDocumentsTool
         from airbeeps.agents.tools.base import AgentToolConfig
+        from airbeeps.agents.tools.data_analysis import ListTabularDocumentsTool
 
         mock_result = MagicMock()
         mock_result.scalars.return_value.all.return_value = []

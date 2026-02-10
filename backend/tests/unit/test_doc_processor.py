@@ -49,9 +49,7 @@ class TestDocumentProcessor:
     def test_process_long_text_creates_multiple_chunks(self, processor):
         """Test that long text creates multiple chunks."""
         # Create a long text
-        content = " ".join(
-            ["This is sentence number {}.".format(i) for i in range(100)]
-        )
+        content = " ".join([f"This is sentence number {i}." for i in range(100)])
 
         nodes = processor.process_text(
             content, use_hierarchical=False, use_semantic=False

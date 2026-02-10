@@ -10,15 +10,14 @@ Provides endpoints for:
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 
-from airbeeps.agents.resilience.health import (
-    HealthRegistry,
-    HealthStatus,
-    get_health_registry,
-)
 from airbeeps.agents.resilience.circuit_breaker import (
     CircuitBreakerRegistry,
+)
+from airbeeps.agents.resilience.health import (
+    HealthStatus,
+    get_health_registry,
 )
 
 logger = logging.getLogger(__name__)

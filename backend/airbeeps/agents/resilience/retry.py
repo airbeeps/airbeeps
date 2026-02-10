@@ -10,20 +10,20 @@ Uses tenacity for robust retry handling with:
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import wraps
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from tenacity import (
     AsyncRetrying,
     RetryError,
-    retry_if_exception_type,
+    after_log,
+    before_sleep_log,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
     wait_random_exponential,
-    before_sleep_log,
-    after_log,
-    retry_if_exception,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,8 +38,6 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 class RetryableError(Exception):
     """Base class for errors that should be retried."""
-
-    pass
 
 
 class ToolExecutionError(RetryableError):
@@ -75,8 +73,6 @@ class MCPConnectionError(RetryableError):
 
 class NonRetryableError(Exception):
     """Errors that should NOT be retried (e.g., permission denied, invalid input)."""
-
-    pass
 
 
 # ============================================================================
@@ -183,7 +179,7 @@ def _should_retry(exception: BaseException, config: RetryConfig) -> bool:
 
     # Check for specific HTTP status codes in LLM errors
     if hasattr(exception, "status_code"):
-        status_code = getattr(exception, "status_code")
+        status_code = exception.status_code
         # Retry on rate limit (429) and server errors (5xx)
         if status_code in (429, 500, 502, 503, 504):
             return True
@@ -390,7 +386,7 @@ async def execute_llm_with_retry(
             # Extract status code if available
             status_code = getattr(e, "status_code", None)
             if status_code is None and hasattr(e, "response"):
-                response = getattr(e, "response")
+                response = e.response
                 status_code = getattr(response, "status_code", None)
 
             raise LLMExecutionError(

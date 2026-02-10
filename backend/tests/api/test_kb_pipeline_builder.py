@@ -9,12 +9,6 @@ Tests the visual pipeline builder backend support:
 
 import pytest
 
-from tests.helpers import (
-    login_and_get_cookies,
-    register_user,
-)
-from tests.helpers.api import _auth_headers
-
 
 class TestPipelinePreviewEndpoint:
     """Tests for the pipeline preview endpoint."""
@@ -74,6 +68,7 @@ class TestPipelinePreviewSchemas:
     def test_rag_config_preview_validation(self):
         """Test RAGConfigPreview validation."""
         from pydantic import ValidationError
+
         from airbeeps.rag.api.v1.schemas import RAGConfigPreview
 
         # retrieval_count out of range
@@ -108,6 +103,7 @@ class TestPipelinePreviewSchemas:
     def test_pipeline_preview_request_validation(self):
         """Test PipelinePreviewRequest validation."""
         from pydantic import ValidationError
+
         from airbeeps.rag.api.v1.schemas import PipelinePreviewRequest
 
         # Empty query

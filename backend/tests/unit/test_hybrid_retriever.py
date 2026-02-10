@@ -2,8 +2,9 @@
 Unit tests for hybrid retriever module.
 """
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
 
 from airbeeps.rag.hybrid_retriever import (
     HybridRetrieverBuilder,

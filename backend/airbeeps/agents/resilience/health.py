@@ -11,9 +11,10 @@ Provides health checks for:
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +165,7 @@ class HealthChecker:
                     message="OK" if status == HealthStatus.HEALTHY else "Slow response",
                 )
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 result = ServiceHealth(
                     name=self.name,
                     status=HealthStatus.UNHEALTHY,
@@ -192,8 +193,7 @@ class HealthChecker:
         """Run the actual health check function."""
         if asyncio.iscoroutinefunction(self.check_func):
             return await self.check_func()
-        else:
-            return self.check_func()
+        return self.check_func()
 
 
 class HealthRegistry:

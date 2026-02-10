@@ -13,8 +13,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from airbeeps.config import settings
-
 logger = logging.getLogger(__name__)
 
 
@@ -114,7 +112,7 @@ class RAGEvaluator:
         except Exception as e:
             logger.error(f"RAGAS evaluation failed: {e}", exc_info=True)
             return EvaluationResult(
-                errors=[f"Evaluation failed: {str(e)}"],
+                errors=[f"Evaluation failed: {e!s}"],
                 num_samples=len(samples),
             )
 

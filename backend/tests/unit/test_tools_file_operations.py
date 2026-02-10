@@ -34,8 +34,8 @@ class TestFileReadTool:
     @pytest.fixture
     def tool(self, temp_dir):
         """Create FileReadTool with allowed paths."""
-        from airbeeps.agents.tools.file_operations import FileReadTool
         from airbeeps.agents.tools.base import AgentToolConfig
+        from airbeeps.agents.tools.file_operations import FileReadTool
 
         config = AgentToolConfig(
             name="file_read",
@@ -135,8 +135,8 @@ class TestFileWriteTool:
     @pytest.fixture
     def tool(self, temp_dir):
         """Create FileWriteTool with allowed paths."""
-        from airbeeps.agents.tools.file_operations import FileWriteTool
         from airbeeps.agents.tools.base import AgentToolConfig
+        from airbeeps.agents.tools.file_operations import FileWriteTool
 
         config = AgentToolConfig(
             name="file_write",
@@ -223,8 +223,8 @@ class TestFileListTool:
     @pytest.fixture
     def tool(self, temp_dir):
         """Create FileListTool with allowed paths."""
-        from airbeeps.agents.tools.file_operations import FileListTool
         from airbeeps.agents.tools.base import AgentToolConfig
+        from airbeeps.agents.tools.file_operations import FileListTool
 
         config = AgentToolConfig(
             name="file_list",

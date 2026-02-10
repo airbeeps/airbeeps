@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from airbeeps.ai_models.client_factory import create_chat_model
 from airbeeps.assistants.models import Assistant
-from airbeeps.system_config.service import config_service
 
 from .descriptions import (
     get_action_description,
@@ -32,7 +31,7 @@ from .security import ContentFilter, PermissionChecker
 from .tools.base import AgentToolConfig
 from .tools.knowledge_base import KnowledgeBaseTool
 from .tools.registry import tool_registry
-from .tracing.instrumentation import trace_span, get_tracer
+from .tracing.instrumentation import get_tracer
 from .tracing.metrics import get_metrics_collector
 from .tracing.pii_redactor import get_redactor
 

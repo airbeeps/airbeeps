@@ -2,12 +2,9 @@
 Unit tests for vector store factory and adapters.
 """
 
-import pytest
-
 from airbeeps.rag.stores import (
     VectorStoreFactory,
     VectorStoreType,
-    get_vector_store,
 )
 from airbeeps.rag.stores.base import collection_name_for_kb
 
@@ -83,4 +80,3 @@ class TestGetVectorStore:
         """Test uses default type when not specified."""
         # Just verify the function exists and accepts parameters
         # Actual creation requires store connection
-        pass

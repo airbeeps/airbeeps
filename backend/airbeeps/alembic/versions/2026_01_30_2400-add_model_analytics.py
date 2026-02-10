@@ -10,11 +10,9 @@ Phase 3: Model Analytics and A/B Testing
 - Model usage metrics
 """
 
-from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 import fastapi_users_db_sqlalchemy.generics
-
+import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "m0d3l_4n4lyt1c5"

@@ -8,13 +8,9 @@ Tests the PATCH /conversations/{conv_id}/messages/{msg_id}/edit endpoint:
 4. Deletes subsequent messages
 """
 
-import pytest
+from datetime import UTC
 
-from tests.helpers import (
-    login_and_get_cookies,
-    register_user,
-)
-from tests.helpers.api import _auth_headers
+import pytest
 
 
 class TestMessageEdit:
@@ -54,6 +50,7 @@ class TestMessageEditSchema:
     def test_message_edit_request_min_length(self):
         """Test that empty content is rejected."""
         from pydantic import ValidationError
+
         from airbeeps.chat.api.v1.schemas import MessageEditRequest
 
         with pytest.raises(ValidationError):
@@ -62,6 +59,7 @@ class TestMessageEditSchema:
     def test_message_edit_request_max_length(self):
         """Test that content over max length is rejected."""
         from pydantic import ValidationError
+
         from airbeeps.chat.api.v1.schemas import MessageEditRequest
 
         # Content over 50000 characters
@@ -70,11 +68,12 @@ class TestMessageEditSchema:
 
     def test_message_response_edit_fields(self):
         """Test MessageResponse includes editing fields."""
-        from datetime import datetime, timezone
+        from datetime import datetime
         from uuid import uuid4
+
         from airbeeps.chat.api.v1.schemas import MessageResponse
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         msg_id = uuid4()
         conv_id = uuid4()
 
@@ -98,11 +97,12 @@ class TestMessageEditSchema:
 
     def test_message_edit_response_schema(self):
         """Test MessageEditResponse schema."""
-        from datetime import datetime, timezone
+        from datetime import datetime
         from uuid import uuid4
+
         from airbeeps.chat.api.v1.schemas import MessageEditResponse, MessageResponse
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         msg_id = uuid4()
         conv_id = uuid4()
 
@@ -131,8 +131,9 @@ class TestMessageEditFields:
 
     def test_message_model_has_edit_fields(self):
         """Verify Message model has required editing fields."""
-        from airbeeps.assistants.models import Message
         from sqlalchemy import inspect
+
+        from airbeeps.assistants.models import Message
 
         mapper = inspect(Message)
         columns = {col.key for col in mapper.columns}
@@ -148,8 +149,9 @@ class TestMessageEditFields:
 
     def test_edit_fields_nullable(self):
         """Verify editing fields are nullable (optional for new messages)."""
-        from airbeeps.assistants.models import Message
         from sqlalchemy import inspect
+
+        from airbeeps.assistants.models import Message
 
         mapper = inspect(Message)
         columns = {col.key: col for col in mapper.columns}

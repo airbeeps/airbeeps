@@ -21,7 +21,7 @@ from .evaluator import EvaluationResult, EvaluationSample, RAGEvaluator, get_eva
 from .hybrid_retriever import HybridRetrieverBuilder, build_hybrid_retriever
 from .index_manager import IndexManager, get_index_manager
 from .multi_hop import MultiHopResult, MultiHopRetriever, get_multi_hop_retriever
-from .query_planner import QueryPlanResult, QueryPlanner, get_query_planner
+from .query_planner import QueryPlanner, QueryPlanResult, get_query_planner
 from .query_transform import QueryTransformer, QueryTransformType, get_query_transformer
 from .reranker import RerankerFactory, RerankerType, get_reranker
 from .self_rag import SelfRAG, SelfRAGResult, get_self_rag

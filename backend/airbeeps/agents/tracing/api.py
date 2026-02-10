@@ -12,14 +12,14 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from airbeeps.agents.tracing.storage import AgentTrace, TraceService
 from airbeeps.auth import current_superuser
 from airbeeps.config import settings
 from airbeeps.database import get_async_session
 from airbeeps.users.models import User
-from airbeeps.agents.tracing.storage import TraceService, AgentTrace
 
 router = APIRouter(prefix="/traces", tags=["Agent Traces"])
 
@@ -261,9 +261,8 @@ async def get_tool_analytics(
     - Success rates per tool
     - Average latency per tool
     """
-    from sqlalchemy import func, select
-
     import sqlalchemy as sa
+    from sqlalchemy import func, select
 
     # Build base query for tool spans
     query = (
@@ -329,8 +328,7 @@ async def get_cost_analytics(
 
     Returns cost breakdown by time period.
     """
-    from sqlalchemy import func, select, cast, Date
-    import sqlalchemy as sa
+    from sqlalchemy import func, select
 
     # Default to last 30 days if no dates provided
     if not end_date:

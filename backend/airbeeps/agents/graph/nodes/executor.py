@@ -266,7 +266,7 @@ async def _execute_single_tool(
             duration_ms=duration_ms,
         )
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         duration_ms = int((time.time() - start_time) * 1000)
         logger.warning(f"Tool {tool_name} timed out after {timeout_seconds}s")
 

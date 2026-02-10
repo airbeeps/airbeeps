@@ -4,9 +4,10 @@ Integration tests for LangGraph agent execution.
 Tests full graph runs with mocked LLM to ensure no real API calls.
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
+
+import pytest
 
 
 class TestFullGraphExecution:
@@ -91,8 +92,8 @@ class TestFullGraphExecution:
     @pytest.mark.asyncio
     async def test_tool_execution_flow(self, mock_llm, mock_tool):
         """Test flow when planner decides to use tools."""
-        from airbeeps.agents.graph.nodes.planner import planner_node
         from airbeeps.agents.graph.nodes.executor import executor_node
+        from airbeeps.agents.graph.nodes.planner import planner_node
         from airbeeps.agents.graph.nodes.reflector import reflector_node
 
         # Step 1: Planner decides to use tool

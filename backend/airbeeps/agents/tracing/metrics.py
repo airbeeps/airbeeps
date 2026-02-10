@@ -9,7 +9,6 @@ Provides metrics for:
 """
 
 import logging
-from typing import Any
 
 from opentelemetry import metrics
 from opentelemetry.sdk.metrics import MeterProvider

@@ -9,9 +9,8 @@ Phase 5: Agentic RAG + Parallel Execution
 - Enhanced parallel execution settings
 """
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "a4g3nt1cr4g5x"

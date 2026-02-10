@@ -10,11 +10,9 @@ Phase 3: Custom Specialist Types and Routing Rules
 - Performance metrics for analytics
 """
 
-from alembic import op
-import sqlalchemy as sa
-from sqlalchemy.dialects import postgresql
 import fastapi_users_db_sqlalchemy.generics
-
+import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "cust_sp3c1al1st"

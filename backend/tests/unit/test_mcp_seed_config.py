@@ -5,9 +5,10 @@ Tests that MCP servers (GitHub, Notion, Google Drive, etc.) are properly
 configured in seed.yaml with required fields and setup instructions.
 """
 
+from pathlib import Path
+
 import pytest
 import yaml
-from pathlib import Path
 
 
 class TestMCPSeedConfiguration:
@@ -21,7 +22,7 @@ class TestMCPSeedConfiguration:
         )
         assert seed_path.exists(), f"seed.yaml not found at {seed_path}"
 
-        with open(seed_path, "r", encoding="utf-8") as f:
+        with open(seed_path, encoding="utf-8") as f:
             return yaml.safe_load(f)
 
     @pytest.fixture
@@ -203,7 +204,7 @@ class TestMCPServerNames:
         seed_path = (
             Path(__file__).parent.parent.parent / "airbeeps" / "config" / "seed.yaml"
         )
-        with open(seed_path, "r", encoding="utf-8") as f:
+        with open(seed_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         return config.get("mcp_servers", [])
 
@@ -241,7 +242,7 @@ class TestLiveConnectorIntegration:
         seed_path = (
             Path(__file__).parent.parent.parent / "airbeeps" / "config" / "seed.yaml"
         )
-        with open(seed_path, "r", encoding="utf-8") as f:
+        with open(seed_path, encoding="utf-8") as f:
             config = yaml.safe_load(f)
         return config.get("mcp_servers", [])
 

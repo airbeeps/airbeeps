@@ -4,11 +4,11 @@ Integration tests for the memory system.
 Tests memory service, encryption, consent management, and GDPR compliance.
 """
 
-import pytest
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
-from datetime import datetime, timedelta
 
+import pytest
 
 # ============================================================================
 # Fixtures
@@ -125,8 +125,8 @@ class TestMemoryService:
         self, mock_session, mock_user, mock_assistant
     ):
         """Test storing memory when user has consented."""
-        from airbeeps.agents.memory.service import MemoryService
         from airbeeps.agents.memory.models import MemoryTypeEnum
+        from airbeeps.agents.memory.service import MemoryService
 
         service = MemoryService(session=mock_session)
 
@@ -152,8 +152,8 @@ class TestMemoryService:
         self, mock_session, mock_user, mock_assistant
     ):
         """Test that storing memory without consent raises error."""
-        from airbeeps.agents.memory.service import MemoryService
         from airbeeps.agents.memory.models import MemoryTypeEnum
+        from airbeeps.agents.memory.service import MemoryService
 
         with patch(
             "airbeeps.agents.memory.service.MemoryService.check_consent"
@@ -343,7 +343,6 @@ class TestMemoryTTL:
     ):
         """Test that memory expiration is calculated correctly."""
         from airbeeps.agents.memory.service import MemoryService
-        from airbeeps.agents.memory.models import MemoryTypeEnum
 
         with patch(
             "airbeeps.agents.memory.service.MemoryService.check_consent"

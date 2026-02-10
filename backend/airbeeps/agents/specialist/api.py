@@ -14,33 +14,25 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func, desc
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from airbeeps.database import get_async_session
-from airbeeps.auth import current_active_user, current_superuser
-from airbeeps.users.models import User
-from airbeeps.assistants.models import Assistant
 from airbeeps.agents.models import (
     AgentCollaborationLog,
     CollaborationStatusEnum,
     CustomSpecialistType,
-    SpecialistRoutingRule,
-    SpecialistPerformanceMetric,
     RoutingRuleTypeEnum,
+    SpecialistRoutingRule,
 )
+from airbeeps.auth import current_active_user, current_superuser
+from airbeeps.database import get_async_session
+from airbeeps.users.models import User
 
+from .router import AgentRouter
 from .types import (
-    SpecialistType,
-    SpecialistConfig,
     SPECIALIST_CONFIGS,
+    SpecialistType,
     get_specialist_config,
-)
-from .router import AgentRouter, RoutingDecision
-from .orchestrator import (
-    MultiAgentOrchestrator,
-    AgentCollaborationConfig,
-    CollaborationResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -373,7 +365,6 @@ async def classify_request(
     router = AgentRouter(llm=None, use_llm_classification=False)
 
     # Route the request
-    import asyncio
 
     result = await router.route(request.user_input, available)
 
@@ -582,6 +573,7 @@ async def delete_old_collaboration_logs(
     Delete collaboration logs older than specified days (admin only).
     """
     from datetime import timedelta
+
     from sqlalchemy import delete
 
     cutoff_date = datetime.utcnow() - timedelta(days=days)
@@ -1051,8 +1043,8 @@ async def get_specialist_analytics(
     current_user: User = Depends(current_superuser),
 ):
     """Get performance analytics for each specialist type."""
-    from datetime import timedelta
     from collections import defaultdict
+    from datetime import timedelta
 
     cutoff_date = datetime.utcnow() - timedelta(days=days)
 

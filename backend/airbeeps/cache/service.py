@@ -4,8 +4,9 @@ Cache service providing high-level caching operations.
 
 import hashlib
 import logging
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from ..config import settings
 from .backends import CacheBackend, InMemoryCache, RedisCache

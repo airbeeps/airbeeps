@@ -334,9 +334,10 @@ def upgrade() -> None:
         )
 
     # Insert default retention policy (SQLite-compatible)
-    from sqlalchemy import text
     import uuid
     from datetime import datetime
+
+    from sqlalchemy import text
 
     default_policy_id = str(uuid.uuid4())
     op.execute(

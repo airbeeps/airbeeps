@@ -33,7 +33,7 @@ class TestSelfRAGResult:
 
     def test_create_result(self):
         """Should create result with expected fields."""
-        from airbeeps.rag.self_rag import RelevanceJudgement, SelfRAGResult
+        from airbeeps.rag.self_rag import SelfRAGResult
 
         result = SelfRAGResult(
             query="test query",
@@ -207,12 +207,12 @@ class TestSelfRAG:
                 return MagicMock(
                     text="RELEVANT: NO\nSUFFICIENT: NO\nCONFIDENCE: 20\nREASONING: Not relevant"
                 )
-            elif call_count == 2:  # Rephrase
+            if call_count == 2:  # Rephrase
                 return MagicMock(text="rephrased query")
-            else:  # Second judgement
-                return MagicMock(
-                    text="RELEVANT: YES\nSUFFICIENT: YES\nCONFIDENCE: 85\nREASONING: Good"
-                )
+            # Second judgement
+            return MagicMock(
+                text="RELEVANT: YES\nSUFFICIENT: YES\nCONFIDENCE: 85\nREASONING: Good"
+            )
 
         mock_llm.acomplete = mock_acomplete
 

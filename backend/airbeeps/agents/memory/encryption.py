@@ -8,7 +8,6 @@ import base64
 import hashlib
 import logging
 import os
-from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -125,7 +124,6 @@ class MemoryEncryption:
             salt = b"airbeeps_memory_salt_v1"
 
         # Use PBKDF2 to derive a key
-        import hashlib
 
         dk = hashlib.pbkdf2_hmac(
             "sha256",

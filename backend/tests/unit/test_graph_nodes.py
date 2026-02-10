@@ -6,7 +6,7 @@ All tests use mocked LLM to ensure no real API calls are made.
 """
 
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

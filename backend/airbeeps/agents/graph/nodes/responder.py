@@ -168,7 +168,7 @@ async def responder_node(
 
 def _format_tool_response(user_input: str, tools_used: list[dict]) -> str:
     """Format a response from tool results without LLM"""
-    parts = [f"Here's what I found for your request:\n"]
+    parts = ["Here's what I found for your request:\n"]
 
     for tool in tools_used:
         if tool.get("success"):

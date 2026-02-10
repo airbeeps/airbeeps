@@ -4,9 +4,7 @@ File management service for handling file operations and business logic.
 
 import base64
 import hashlib
-import io
 import logging
-import re
 import urllib.parse
 from pathlib import Path
 from typing import BinaryIO
@@ -346,13 +344,12 @@ class FileService:
                         detail=f"Unsupported file type: {detected_mime}. "
                         f"Allowed types: {', '.join(allowed_types)}",
                     )
-                else:
-                    # Declared type is allowed, but magic detection differs
-                    # This could be a spoofing attempt - log but allow if declared is valid
-                    logger.warning(
-                        f"Content-type mismatch for {file.filename}: "
-                        f"declared={file.content_type}, detected={detected_mime}. Allowing declared type."
-                    )
+                # Declared type is allowed, but magic detection differs
+                # This could be a spoofing attempt - log but allow if declared is valid
+                logger.warning(
+                    f"Content-type mismatch for {file.filename}: "
+                    f"declared={file.content_type}, detected={detected_mime}. Allowing declared type."
+                )
         except HTTPException:
             # Re-raise HTTP exceptions (our own validation errors)
             raise

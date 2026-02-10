@@ -303,7 +303,6 @@ def should_use_tool(state: dict[str, Any]) -> str:
     """
     if state.get("pending_tool_calls"):
         return "execute"
-    elif state.get("final_answer"):
+    if state.get("final_answer"):
         return "respond"
-    else:
-        return "respond"
+    return "respond"
