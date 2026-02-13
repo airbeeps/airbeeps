@@ -1,189 +1,181 @@
-# AGENTS.md - Agentic Coding Guidelines for Airbeeps
+# AGENTS.md - Airbeeps Agent Playbook
 
-## Project Overview
-Airbeeps is a local-first, self-hosted AI assistant with FastAPI backend and Nuxt 3 frontend.
+This file is for coding agents working in this repo.
+It favors fast, real workflows over generic boilerplate.
 
-## Build/Lint/Test Commands
+## 1) Golden Path (Daily Dev)
 
-### Full Stack (via Makefile on Linux/macOS)
-```bash
-make install        # Install all dependencies
-make lint           # Lint all code
-make format         # Format all code
-make fix            # Auto-fix all issues
-make typecheck      # Type check all code
-make check          # Run all checks (lint + typecheck)
-make test           # Run all tests
-make pre-commit     # Run pre-commit on all files
-```
+These are the two core commands used for regular local development.
+They are the same on PowerShell and Linux/macOS shells.
 
-### Backend (Python)
+### Backend
 ```bash
 cd backend
-
-# Install
-uv sync --all-groups
-
-# Lint & Format
-uv run ruff check .
-uv run ruff check --fix .    # Auto-fix
-uv run ruff format .
-
-# Type Check
-uv run mypy
-
-# Test - SINGLE TEST
-uv run pytest tests/path/test_file.py::test_function_name -v
-uv run pytest tests/path/test_file.py -v                 # Single file
-uv run pytest -k "test_pattern" -v                       # By pattern
-uv run pytest --cov=airbeeps --cov-report=html          # With coverage
-
-# Run dev server
-uv run airbeeps dev
+uv run fastapi dev --port 8500 airbeeps/main.py
 ```
 
-### Frontend (Nuxt/Vue/TypeScript)
+### Frontend
 ```bash
 cd frontend
-
-# Install
-pnpm install
-
-# Lint & Format
-pnpm lint
-pnpm lint:fix                  # Auto-fix
-pnpm format
-
-# Type Check
-pnpm typecheck
-
-# Test - SINGLE TEST
-pnpm test:unit -- test-file-pattern   # Run specific test file
-pnpm test:unit:watch                  # Watch mode
-pnpm test:unit -- --reporter=verbose  # Verbose output
-pnpm test:e2e                         # E2E with Playwright
-
-# Dev server
 pnpm dev
 ```
 
-## Code Style Guidelines
+Local URLs:
+- Backend API: `http://localhost:8500`
+- Frontend: `http://localhost:3000`
+- API docs (dev): `http://localhost:8500/docs`
 
-### Python (Backend)
-- **Line length:** 88 characters (Black-compatible via Ruff)
-- **Formatter:** Ruff (configured in root `pyproject.toml`)
-- **Import style:** Use Ruff's isort; first-party package is `airbeeps`
-- **Type annotations:** Required for public APIs; use `| None` not `Optional`
-- **Docstrings:** Google style recommended
-- **Async:** Use `async`/`await` for I/O operations; pytest uses `asyncio_mode = auto`
-- **Error handling:** Use FastAPI's HTTPException with appropriate status codes
-- **Security:** Tests block network access via `pytest-socket`; use `AIRBEEPS_TEST_MODE=1` for mocks
+## 2) First-Time Setup (When Needed)
 
-**Example:**
-```python
-from typing import Any
+Run once per machine or after dependency resets.
 
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
-
-from airbeeps.database import get_async_session
-
-router = APIRouter()
-
-class ItemCreate(BaseModel):
-    name: str
-    value: int | None = None
-
-@router.post("/items", response_model=ItemResponse)
-async def create_item(data: ItemCreate) -> ItemResponse:
-    """Create a new item."""
-    if not data.name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Name required")
-    return ItemResponse(id=1, name=data.name)
+### Backend setup
+```bash
+cd backend
+cp .env.example .env            # Linux/macOS
+# Copy-Item .env.example .env   # Windows PowerShell
+uv sync --locked
+uv run scripts/bootstrap.py init
 ```
 
-### TypeScript/Vue (Frontend)
-- **Line length:** 100 characters (Prettier)
-- **Formatter:** Prettier with Tailwind plugin
-- **Script order:** `<script>`, `<template>`, `<style>`
-- **Type annotations:** Required (TypeScript strict mode)
-- **Composition API:** Preferred over Options API
-- **Imports:** Use `@/` alias for project files
-- **Vue rules:** PascalCase components, camelCase events, type-based props/emits
-
-**Example:**
-```vue
-<script setup lang="ts">
-import { computed, ref } from "vue";
-import MyComponent from "@/components/MyComponent.vue";
-
-interface Props {
-  title: string;
-  count?: number;
-}
-
-const props = withDefaults(defineProps<Props>(), {
-  count: 0,
-});
-
-const emit = defineEmits<{
-  update: [value: number];
-}>();
-
-const doubled = computed(() => props.count * 2);
-</script>
-
-<template>
-  <div>
-    <h1>{{ title }}</h1>
-    <MyComponent :value="doubled" @update="emit('update', $event)" />
-  </div>
-</template>
+### Frontend setup
+```bash
+cd frontend
+cp .env.example .env            # Linux/macOS
+# Copy-Item .env.example .env   # Windows PowerShell
+pnpm install
 ```
 
-### Naming Conventions
-- **Python:** `snake_case` for functions/variables, `PascalCase` for classes, `SCREAMING_SNAKE_CASE` for constants
-- **TypeScript:** `camelCase` for functions/variables, `PascalCase` for classes/types/interfaces, `SCREAMING_SNAKE_CASE` for constants
-- **Vue files:** `PascalCase.vue` for components, `camelCase.ts` for composables
-- **Tests:** `test_*.py` (Python), `*.spec.ts` (Vitest), `*.e2e.ts` (Playwright)
+Notes:
+- First registered user becomes admin.
+- Backend env vars must use `AIRBEEPS_` prefix.
 
-### Git & Commits
-- Follow [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): description`
-- Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`
-- Examples: `feat(chat): add streaming response`, `fix(auth): resolve token refresh race condition`
-- Pre-commit hooks will run automatically; use `pre-commit run --all-files` to check manually
+## 3) High-Value Repo Map
 
-## Testing Guidelines
+### Backend (FastAPI)
+- Entry point: `backend/airbeeps/main.py`
+- App config/env loader: `backend/airbeeps/config.py`
+- Domain modules: `backend/airbeeps/<domain>/`
+- Typical domain layout:
+  - `api/v1/user_router.py`, `api/v1/admin_router.py`, `api/v1/schemas.py`
+  - `service.py`
+  - `models.py`
 
-### Backend Test Mode
-Always use `AIRBEEPS_TEST_MODE=1` in tests to mock external API calls:
-```python
-# Tests automatically use TEST_MODE via conftest.py fixtures
-# Fake LLM and embedding clients are used automatically
+Routing model:
+- Public + auth routes under `/api/v1/...`
+- Authenticated user routes grouped under `/api/v1/...`
+- Admin routes grouped under `/api/v1/admin/...`
+
+### Frontend (Nuxt 3 SPA)
+- Root app: `frontend/app/app.vue`
+- API plugin with auth refresh + timeout defaults: `frontend/app/plugins/api.ts`
+- API helper wrapper: `frontend/app/composables/useAPI.ts`
+- State stores: `frontend/app/stores/*.ts`
+- Pages: `frontend/app/pages/**/*.vue`
+- Shared API types: `frontend/app/types/api.d.ts`
+
+API path convention on frontend:
+- `$api` already uses base URL `/api`.
+- Use paths like `/v1/...` with `$api` and `useAPI`.
+- For manual XHR/fetch bypassing `$api`, include full `/api/v1/...`.
+
+## 4) How to Work in This Codebase
+
+### Backend change pattern
+1. Update domain `service.py` for business logic.
+2. Update `schemas.py` for request/response models.
+3. Update `user_router.py` or `admin_router.py`.
+4. If creating a new domain, wire routers in `backend/airbeeps/main.py`.
+5. Add/update tests in `backend/tests`.
+
+### Frontend change pattern
+1. Put API calls in composables or stores (not scattered in views).
+2. Reuse `~/types/api` types when possible.
+3. Keep page components thin; extract reusable UI/components.
+4. Prefer updating existing store/composable flow over adding one-off fetch logic.
+
+### Config-driven UI toggles
+If adding a new public config key:
+1. Add key to `backend/airbeeps/config/seed.yaml`.
+2. Re-seed configs: `cd backend && uv run scripts/bootstrap.py config-init`
+3. Add key in frontend type: `frontend/app/types/api.d.ts` (`PublicConfig`).
+
+## 5) Fast Validation Commands (No Makefile Required)
+
+Use targeted checks while iterating.
+
+### Backend
+```bash
+cd backend
+uv run ruff check path/to/file.py
+uv run ruff format path/to/file.py
+uv run pytest tests/path/test_file.py -v
+uv run pytest -k "pattern" -v
 ```
 
-### Network Security
-Tests block network access via `pytest-socket`. If you need to allow specific hosts:
-```ini
-# Add to backend/pytest.ini --allow-hosts list
---allow-hosts=127.0.0.1,localhost,::1,your-host
+### Frontend
+```bash
+cd frontend
+pnpm lint -- app/path/to/file.ts
+pnpm typecheck
+pnpm test:unit -- tests/unit/path.spec.ts
 ```
 
-### Database
-- Tests use SQLite by default (configured in test fixtures)
-- Delete `backend/testing.db` if tests fail due to stale database
+Before opening a PR, run broader checks for changed area:
+- Backend: `uv run ruff check .` and relevant `pytest` scope.
+- Frontend: `pnpm check` and relevant unit/e2e tests.
 
-## Configuration Files
-- `pyproject.toml` (root): Ruff, mypy, pytest, coverage config
-- `backend/pyproject.toml`: Python package definition
-- `backend/pytest.ini`: Test-specific pytest config
-- `frontend/eslint.config.mjs`: ESLint flat config
-- `frontend/prettier.config.mjs`: Prettier config
-- `.pre-commit-config.yaml`: Pre-commit hooks
-- `.editorconfig`: Editor settings (2 spaces, LF endings)
+## 6) Test and Runtime Guardrails
 
-## Common Patterns
-- **Backend:** FastAPI routers in `backend/airbeeps/*/api/v1/`, models in `models/`, schemas in `schemas/`
-- **Frontend:** Composables in `frontend/app/composables/`, components in `components/`, pages in `pages/`
-- **Database:** Use Alembic for migrations; seed data via `uv run scripts/bootstrap.py init`
-- **Environment:** All settings use `AIRBEEPS_` prefix; see `.env.docker.example` for reference
+### Backend tests
+- Test config is prepared in `backend/tests/conftest.py`.
+- Tests force `AIRBEEPS_TEST_MODE=1` (fake LLM/embedding clients).
+- `pytest-socket` blocks outbound network by default.
+- Embedded Chroma mode uses empty `AIRBEEPS_CHROMA_SERVER_HOST`.
+
+### E2E tests
+- Config: `frontend/playwright.config.ts`
+- Starts backend and frontend automatically via `webServer`.
+- Runs with a single worker intentionally (stateful first-user-admin behavior).
+
+### Browser smoke testing (Chrome MCP)
+- If Chrome MCP is available in the current agent session, prefer using it for UI smoke tests.
+- Typical quick check: sign in -> open/create chat -> send a message -> confirm response renders.
+- Default local login to try:
+  - User ID/email: `s@s.com`
+  - Password: `s`
+- If that login fails (for example on a clean database), create a new user via sign-up.
+
+## 7) Critical Environment Facts
+
+- Backend reads `.env` from `backend/.env` in dev mode.
+- Frontend runtime config defaults:
+  - `AIRBEEPS_API_BASE_URL=http://localhost:8500/api`
+  - `AIRBEEPS_APP_NAME=Airbeeps`
+- Backend default secret key is for local dev only; do not use in production.
+
+## 8) Style and Quality Baseline
+
+- Python:
+  - Ruff format/lint, line length 88, type hints on public APIs.
+  - Async-first for I/O paths.
+- Vue/TS:
+  - Composition API + strict typing.
+  - Prettier + ESLint.
+  - Keep script/template/style blocks clean and readable.
+- Editor consistency:
+  - LF line endings, spaces, `.editorconfig` is source of truth.
+
+## 9) Commit and PR Expectations
+
+- Use Conventional Commit style: `type(scope): message`
+- Keep commits focused and reviewable.
+- Include tests for behavior changes.
+- Mention any env/config/bootstrap requirement in PR description.
+
+## 10) What to Avoid
+
+- Do not add Makefile-only instructions as primary workflow.
+- Do not hardcode secrets or commit `.env` files.
+- Do not bypass existing API plugin/auth refresh flow without reason.
+- Do not introduce broad refactors when a scoped fix is enough.
