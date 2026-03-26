@@ -11,7 +11,7 @@ export default defineNuxtConfig({
   devtools: { enabled: false },
   telemetry: false,
   ssr: false,
-  css: ["~/assets/css/tailwind.css", "katex/dist/katex.min.css"],
+  css: ["~/assets/css/tailwind.css"],
   vite: {
     plugins: [tailwindcss()],
     optimizeDeps: {
@@ -110,6 +110,7 @@ export default defineNuxtConfig({
 
   i18n: {
     defaultLocale: "en",
+    baseUrl: process.env.AIRBEEPS_BASE_URL || "",
     detectBrowserLanguage: {
       useCookie: true,
       cookieKey: "i18n_redirected",

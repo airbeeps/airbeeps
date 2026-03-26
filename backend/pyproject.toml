@@ -74,7 +74,7 @@ dependencies = [
     "sentence-transformers>=3.0.1",
     "platformdirs>=4.0.0",
     "rich>=13.0.0",
-    "litellm>=1.80.10",
+    "litellm==1.82.6",
     "slowapi>=0.1.9",
     "filetype>=1.2.0",
     "defusedxml>=0.7.1",
